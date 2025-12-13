@@ -1,0 +1,721 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Hybrid Versioning System Metadata Schema",
+  "description": "Metadata schema for data artifacts in raw, cleaned, and features layers. Supports reproducibility, data lineage, and version tracking.",
+  "type": "object",
+  "required": [
+    "metadata_version",
+    "creation_timestamp",
+    "layer",
+    "asset"
+  ],
+  "properties": {
+    "metadata_version": {
+      "type": "string",
+      "description": "Version of this metadata schema specification",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "examples": ["1.0.0", "1.1.0"]
+    },
+    "creation_timestamp": {
+      "type": "string",
+      "description": "ISO 8601 timestamp when metadata was created (UTC)",
+      "format": "date-time",
+      "examples": ["2024-01-15T14:30:00Z", "2024-01-15T14:30:00.123456Z"]
+    },
+    "layer": {
+      "type": "string",
+      "description": "Data layer this metadata describes",
+      "enum": ["raw", "cleaned", "features"]
+    },
+    "asset": {
+      "type": "string",
+      "description": "Asset identifier",
+      "pattern": "^[A-Z0-9_]+$",
+      "examples": ["MES", "ES", "VIX"]
+    },
+    "version_info": {
+      "type": "object",
+      "description": "Version information (for cleaned and features layers)",
+      "properties": {
+        "major_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Major version number (v1, v2, ...)"
+        },
+        "previous_version": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Previous major version (0 if first version)"
+        }
+      }
+    },
+    "ingestion_date": {
+      "type": "string",
+      "description": "Date when data was ingested (for raw layer)",
+      "format": "date",
+      "examples": ["2024-01-15", "2024-01-16"]
+    },
+    "data_range": {
+      "type": "object",
+      "description": "Temporal range of data in this artifact",
+      "required": ["start_timestamp", "end_timestamp"],
+      "properties": {
+        "start_timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Earliest timestamp in dataset (UTC)"
+        },
+        "end_timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Latest timestamp in dataset (UTC)"
+        }
+      }
+    },
+    "record_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of records in this artifact"
+    },
+    "file_info": {
+      "type": "object",
+      "description": "Information about files in this artifact",
+      "properties": {
+        "total_size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total size of all data files in bytes"
+        },
+        "total_size_human": {
+          "type": "string",
+          "description": "Human-readable total size",
+          "examples": ["2.5 GB", "150 MB"]
+        },
+        "file_list": {
+          "type": "array",
+          "description": "List of data files with sizes and checksums",
+          "items": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string",
+                "description": "Filename (relative to metadata location)"
+              },
+              "size_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "format": {
+                "type": "string",
+                "enum": ["parquet", "json", "csv", "arrow"],
+                "description": "File format"
+              },
+              "md5_checksum": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{32}$",
+                "description": "MD5 checksum for integrity verification"
+              },
+              "row_count": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Row count for tabular files"
+              }
+            }
+          }
+        }
+      }
+    },
+    "schema_info": {
+      "type": "object",
+      "description": "Schema information for data files",
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "description": "Version identifier for schema"
+        },
+        "columns": {
+          "type": "array",
+          "description": "Column definitions",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Column name"
+              },
+              "type": {
+                "type": "string",
+                "description": "Data type (Parquet type)",
+                "examples": ["int32", "int64", "float", "double", "string", "timestamp[ns]"]
+              },
+              "nullable": {
+                "type": "boolean",
+                "description": "Whether column can contain nulls"
+              },
+              "description": {
+                "type": "string",
+                "description": "Column description and semantics"
+              }
+            }
+          }
+        }
+      }
+    },
+    "data_quality": {
+      "type": "object",
+      "description": "Data quality metrics and flags",
+      "properties": {
+        "null_counts": {
+          "type": "object",
+          "description": "Count of null values per column"
+        },
+        "quality_flags": {
+          "type": "array",
+          "description": "Quality issues or warnings",
+          "items": {
+            "type": "string",
+            "examples": [
+              "gaps_in_timestamps",
+              "duplicate_records",
+              "outliers_detected",
+              "missing_data",
+              "schema_mismatches"
+            ]
+          }
+        },
+        "completeness_percentage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of non-null values"
+        }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "description": "Data lineage and dependencies",
+      "properties": {
+        "raw_sources": {
+          "type": "array",
+          "description": "Raw data sources used (for cleaned/features layers)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "asset": {
+                "type": "string"
+              },
+              "dates": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "description": "Ingestion dates used"
+              }
+            }
+          }
+        },
+        "cleaned_version": {
+          "type": "integer",
+          "description": "Cleaned data version used (for features layer)"
+        },
+        "processing_script": {
+          "type": "string",
+          "description": "Script or code version used for processing"
+        },
+        "processing_script_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$",
+          "description": "SHA-1 hash of processing script for reproducibility"
+        }
+      }
+    },
+    "changelog": {
+      "type": "array",
+      "description": "Version change history",
+      "items": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "integer",
+            "description": "Major version number"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this version was created"
+          },
+          "author": {
+            "type": "string",
+            "description": "Person or system that created this version"
+          },
+          "breaking_changes": {
+            "type": "array",
+            "description": "List of breaking changes in this version",
+            "items": {
+              "type": "string"
+            }
+          },
+          "improvements": {
+            "type": "array",
+            "description": "Non-breaking improvements",
+            "items": {
+              "type": "string"
+            }
+          },
+          "bug_fixes": {
+            "type": "array",
+            "description": "Bug fixes",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notes": {
+            "type": "string",
+            "description": "Additional notes about this version"
+          }
+        }
+      }
+    },
+    "processing_info": {
+      "type": "object",
+      "description": "Processing and computation details",
+      "properties": {
+        "pipeline_name": {
+          "type": "string",
+          "description": "Name of pipeline that generated this data"
+        },
+        "pipeline_version": {
+          "type": "string",
+          "description": "Version of pipeline code"
+        },
+        "execution_timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When processing was executed"
+        },
+        "execution_duration_seconds": {
+          "type": "number",
+          "description": "How long processing took"
+        },
+        "environment": {
+          "type": "string",
+          "description": "Environment where processing ran",
+          "enum": ["development", "staging", "production"]
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Processing parameters used"
+        }
+      }
+    },
+    "asset_info": {
+      "type": "object",
+      "description": "Asset-specific metadata",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Trading symbol"
+        },
+        "contract_code": {
+          "type": "string",
+          "description": "Futures contract code (e.g., ESZ23)"
+        },
+        "roll_date": {
+          "type": "string",
+          "format": "date",
+          "description": "Expiration/roll date for futures contract"
+        },
+        "exchange": {
+          "type": "string",
+          "description": "Trading exchange (e.g., CME)"
+        },
+        "currency": {
+          "type": "string",
+          "description": "Asset currency",
+          "examples": ["USD"]
+        }
+      }
+    },
+    "feature_info": {
+      "type": "object",
+      "description": "Feature-specific metadata (features layer only)",
+      "properties": {
+        "feature_set_name": {
+          "type": "string",
+          "description": "Name of feature set"
+        },
+        "feature_list": {
+          "type": "array",
+          "description": "List of features included",
+          "items": {
+            "type": "string"
+          }
+        },
+        "feature_definitions_version": {
+          "type": "string",
+          "description": "Version of feature definitions used"
+        },
+        "computation_window_days": {
+          "type": "integer",
+          "description": "Lookback window for feature computation"
+        },
+        "base_frequency": {
+          "type": "string",
+          "description": "Base frequency of feature data",
+          "examples": ["1min", "5min", "1h", "1d"]
+        }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-form notes about this data artifact"
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "metadata_version": "1.0.0",
+      "creation_timestamp": "2024-01-15T16:00:00Z",
+      "layer": "raw",
+      "asset": "MES",
+      "ingestion_date": "2024-01-15",
+      "data_range": {
+        "start_timestamp": "2024-01-15T09:30:00Z",
+        "end_timestamp": "2024-01-15T16:00:00Z"
+      },
+      "record_count": 390,
+      "file_info": {
+        "total_size_bytes": 2097152,
+        "total_size_human": "2.0 MB",
+        "file_list": [
+          {
+            "filename": "ohlcv.parquet",
+            "size_bytes": 1048576,
+            "format": "parquet",
+            "md5_checksum": "5d41402abc4b2a76b9719d911017c592",
+            "row_count": 390
+          },
+          {
+            "filename": "tick_data.parquet",
+            "size_bytes": 1048576,
+            "format": "parquet",
+            "md5_checksum": "6512bd43d9caa6e02c990b0a82652dca",
+            "row_count": 15600
+          }
+        ]
+      },
+      "schema_info": {
+        "schema_version": "1.0",
+        "columns": [
+          {
+            "name": "timestamp",
+            "type": "timestamp[ns]",
+            "nullable": false,
+            "description": "UTC timestamp of OHLCV bar"
+          },
+          {
+            "name": "open",
+            "type": "double",
+            "nullable": false,
+            "description": "Opening price for period"
+          },
+          {
+            "name": "high",
+            "type": "double",
+            "nullable": false,
+            "description": "Highest price in period"
+          },
+          {
+            "name": "low",
+            "type": "double",
+            "nullable": false,
+            "description": "Lowest price in period"
+          },
+          {
+            "name": "close",
+            "type": "double",
+            "nullable": false,
+            "description": "Closing price for period"
+          },
+          {
+            "name": "volume",
+            "type": "int64",
+            "nullable": false,
+            "description": "Trading volume in contracts"
+          }
+        ]
+      },
+      "data_quality": {
+        "null_counts": {
+          "timestamp": 0,
+          "open": 0,
+          "high": 0,
+          "low": 0,
+          "close": 0,
+          "volume": 0
+        },
+        "quality_flags": [],
+        "completeness_percentage": 100
+      },
+      "asset_info": {
+        "symbol": "MES",
+        "contract_code": "ESH24",
+        "roll_date": "2024-03-15",
+        "exchange": "CME",
+        "currency": "USD"
+      },
+      "notes": "Daily ingestion completed successfully"
+    },
+    {
+      "metadata_version": "1.0.0",
+      "creation_timestamp": "2024-01-15T18:00:00Z",
+      "layer": "cleaned",
+      "asset": "MES",
+      "version_info": {
+        "major_version": 1,
+        "previous_version": 0
+      },
+      "data_range": {
+        "start_timestamp": "2024-01-01T09:30:00Z",
+        "end_timestamp": "2024-01-15T16:00:00Z"
+      },
+      "record_count": 3900,
+      "file_info": {
+        "total_size_bytes": 5242880,
+        "total_size_human": "5.0 MB",
+        "file_list": [
+          {
+            "filename": "ohlcv.parquet",
+            "size_bytes": 3145728,
+            "format": "parquet",
+            "md5_checksum": "098f6bcd4621d373cade4e832627b4f6",
+            "row_count": 3900
+          },
+          {
+            "filename": "quality_metrics.json",
+            "size_bytes": 2097152,
+            "format": "json",
+            "md5_checksum": "1b1dcc1b23eafbd5cb31e2e0afaca902"
+          }
+        ]
+      },
+      "schema_info": {
+        "schema_version": "1.0",
+        "columns": [
+          {
+            "name": "timestamp",
+            "type": "timestamp[ns]",
+            "nullable": false,
+            "description": "UTC timestamp normalized to market open"
+          },
+          {
+            "name": "open",
+            "type": "double",
+            "nullable": false,
+            "description": "Opening price, cleaned and validated"
+          },
+          {
+            "name": "high",
+            "type": "double",
+            "nullable": false,
+            "description": "Highest price, cleaned"
+          },
+          {
+            "name": "low",
+            "type": "double",
+            "nullable": false,
+            "description": "Lowest price, cleaned"
+          },
+          {
+            "name": "close",
+            "type": "double",
+            "nullable": false,
+            "description": "Closing price, adjusted for splits"
+          },
+          {
+            "name": "volume",
+            "type": "int64",
+            "nullable": false,
+            "description": "Volume in contracts"
+          },
+          {
+            "name": "vwap",
+            "type": "double",
+            "nullable": true,
+            "description": "Volume-weighted average price"
+          }
+        ]
+      },
+      "data_quality": {
+        "null_counts": {
+          "timestamp": 0,
+          "open": 0,
+          "high": 0,
+          "low": 0,
+          "close": 0,
+          "volume": 0,
+          "vwap": 5
+        },
+        "quality_flags": [],
+        "completeness_percentage": 99.9
+      },
+      "dependencies": {
+        "raw_sources": [
+          {
+            "asset": "MES",
+            "dates": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09", "2024-01-10", "2024-01-11", "2024-01-12", "2024-01-15"]
+          }
+        ],
+        "processing_script": "cleaning/normalize_ohlcv.py",
+        "processing_script_hash": "abc1234567890abcdef1234567890abcdef123456"
+      },
+      "changelog": [
+        {
+          "version": 1,
+          "timestamp": "2024-01-15T18:00:00Z",
+          "author": "data-pipeline-bot",
+          "breaking_changes": [],
+          "improvements": [
+            "Initial cleaned data version",
+            "Normalized timestamps to UTC",
+            "Applied outlier detection"
+          ],
+          "bug_fixes": [],
+          "notes": "First version of cleaned MES data"
+        }
+      ],
+      "processing_info": {
+        "pipeline_name": "data_cleaning_pipeline",
+        "pipeline_version": "1.0.0",
+        "execution_timestamp": "2024-01-15T18:00:00Z",
+        "execution_duration_seconds": 45.2,
+        "environment": "production",
+        "parameters": {
+          "outlier_threshold": 3.0,
+          "null_handling": "forward_fill",
+          "normalization_method": "market_hours"
+        }
+      },
+      "asset_info": {
+        "symbol": "MES",
+        "contract_code": "ESH24",
+        "roll_date": "2024-03-15",
+        "exchange": "CME",
+        "currency": "USD"
+      },
+      "notes": "Cleaned data aggregates 15 trading days. Ready for feature engineering."
+    },
+    {
+      "metadata_version": "1.0.0",
+      "creation_timestamp": "2024-01-15T20:00:00Z",
+      "layer": "features",
+      "asset": "MES",
+      "version_info": {
+        "major_version": 1,
+        "previous_version": 0
+      },
+      "data_range": {
+        "start_timestamp": "2024-01-01T09:30:00Z",
+        "end_timestamp": "2024-01-15T16:00:00Z"
+      },
+      "record_count": 3900,
+      "file_info": {
+        "total_size_bytes": 8388608,
+        "total_size_human": "8.0 MB",
+        "file_list": [
+          {
+            "filename": "MES.parquet",
+            "size_bytes": 8388608,
+            "format": "parquet",
+            "md5_checksum": "c45c6b8b2e0a7a2d1e4f5a6b7c8d9e0f",
+            "row_count": 3900
+          }
+        ]
+      },
+      "schema_info": {
+        "schema_version": "1.0",
+        "columns": [
+          {
+            "name": "timestamp",
+            "type": "timestamp[ns]",
+            "nullable": false,
+            "description": "UTC timestamp"
+          },
+          {
+            "name": "volatility_30d",
+            "type": "double",
+            "nullable": true,
+            "description": "30-day rolling standard deviation of returns"
+          },
+          {
+            "name": "volatility_rank",
+            "type": "double",
+            "nullable": true,
+            "description": "Percentile rank of volatility (0-100)"
+          },
+          {
+            "name": "volatility_regime",
+            "type": "string",
+            "nullable": true,
+            "description": "Volatility regime: low, medium, high"
+          }
+        ]
+      },
+      "data_quality": {
+        "null_counts": {
+          "timestamp": 0,
+          "volatility_30d": 29,
+          "volatility_rank": 29,
+          "volatility_regime": 29
+        },
+        "quality_flags": [],
+        "completeness_percentage": 99.2
+      },
+      "dependencies": {
+        "cleaned_version": 1,
+        "processing_script": "features/compute_volatility.py",
+        "processing_script_hash": "def4567890abcdef1234567890abcdef1234567"
+      },
+      "changelog": [
+        {
+          "version": 1,
+          "timestamp": "2024-01-15T20:00:00Z",
+          "author": "feature-engineering-bot",
+          "breaking_changes": [],
+          "improvements": [
+            "Initial volatility feature set",
+            "Computed 30-day rolling volatility",
+            "Added volatility ranking"
+          ],
+          "bug_fixes": [],
+          "notes": "First version of price volatility features"
+        }
+      ],
+      "processing_info": {
+        "pipeline_name": "feature_engineering_pipeline",
+        "pipeline_version": "1.0.0",
+        "execution_timestamp": "2024-01-15T20:00:00Z",
+        "execution_duration_seconds": 28.5,
+        "environment": "production",
+        "parameters": {
+          "window_days": 30,
+          "returns_type": "log_returns",
+          "volatility_method": "realized"
+        }
+      },
+      "feature_info": {
+        "feature_set_name": "price_volatility",
+        "feature_list": [
+          "volatility_30d",
+          "volatility_rank",
+          "volatility_regime"
+        ],
+        "feature_definitions_version": "1.0.0",
+        "computation_window_days": 30,
+        "base_frequency": "1d"
+      },
+      "notes": "Volatility features computed from cleaned data v1. Ready for model training."
+    }
+  ]
+}

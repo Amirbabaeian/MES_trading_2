@@ -1,0 +1,140 @@
+# Interactive Brokers Data Provider Configuration Template
+# 
+# This file provides a configuration template for the Interactive Brokers (IB) adapter.
+# Copy this to your local configuration and fill in your credentials.
+# 
+# WARNING: Keep your credentials secure. Use environment variables or secret management
+# for production deployments. Never commit actual credentials to version control.
+
+# Connection settings
+connection:
+  # TWS/Gateway host (typically localhost for local connections)
+  host: "127.0.0.1"
+  
+  # TWS/Gateway port
+  # - Paper trading: 7497 (default)
+  # - Live trading: 7496
+  port: 7497
+  
+  # Client ID (must be unique for multiple connections)
+  client_id: 1
+  
+  # Connection timeout in seconds
+  timeout: 30
+  
+  # Automatically reconnect on disconnection
+  auto_reconnect: true
+  
+  # Max reconnection attempts
+  max_reconnect_attempts: 3
+
+# Authentication credentials
+# IMPORTANT: Use environment variables for sensitive data in production
+# Set via: IB_ACCOUNT, IB_PASSWORD, or pass to constructor
+credentials:
+  # IB Account ID (e.g., "DU123456")
+  account: "${IB_ACCOUNT}"
+  
+  # IB Login password (use environment variable)
+  password: "${IB_PASSWORD}"
+
+# API rate limiting
+rate_limiting:
+  # Maximum API requests per period
+  max_requests: 100
+  
+  # Rate limit period in seconds
+  period_seconds: 60.0
+  
+  # Automatic backoff on rate limit
+  enable_backoff: true
+  
+  # Maximum backoff delay in seconds
+  max_backoff_seconds: 60.0
+
+# Retry configuration
+retry:
+  # Maximum retry attempts for failed requests
+  max_retries: 3
+  
+  # Initial backoff delay in seconds
+  base_delay: 1.0
+  
+  # Maximum backoff delay in seconds
+  max_delay: 60.0
+  
+  # Exponential backoff multiplier
+  exponential_base: 2.0
+  
+  # Add random jitter to avoid thundering herd
+  jitter: true
+
+# Data fetching options
+data:
+  # Default timeframe for data requests
+  default_timeframe: "1D"
+  
+  # Supported timeframes
+  supported_timeframes:
+    - "1M"
+    - "5M"
+    - "15M"
+    - "30M"
+    - "1H"
+    - "1D"
+    - "1W"
+    - "1MO"
+  
+  # Maximum bars per request (IB limit ~8000)
+  max_bars_per_request: 8000
+  
+  # Request timeout in seconds
+  request_timeout: 30
+  
+  # Enable automatic pagination for large date ranges
+  auto_pagination: true
+
+# Symbol configuration
+symbols:
+  # Default symbol list (subset of available)
+  defaults:
+    - "ES"    # E-mini S&P 500
+    - "MES"   # Micro E-mini S&P 500
+    - "NQ"    # E-mini Nasdaq-100
+    - "VIX"   # Volatility Index
+  
+  # Asset class filters (for symbol queries)
+  filters:
+    - "STOCK"
+    - "FUTURE"
+    - "OPTION"
+
+# Contract specifications
+contracts:
+  # Handle contract multipliers
+  use_multipliers: true
+  
+  # Convert to dollars (apply multiplier to prices)
+  normalize_to_dollars: false
+
+# Logging
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+  
+  # Log API requests and responses
+  log_api_calls: true
+  
+  # Log rate limit events
+  log_rate_limit: true
+
+# Feature flags
+features:
+  # Support streaming market data
+  streaming: false
+  
+  # Support options data
+  options: false
+  
+  # Support forex data
+  forex: false

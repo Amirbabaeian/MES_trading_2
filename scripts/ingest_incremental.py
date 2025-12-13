@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""
+Incremental data ingestion script.
+
+Fetches only new data since the last successful ingestion run, enabling
+efficient updates without re-fetching historical data.
+
+This script uses the progress tracking system to determine where each
+asset/timeframe left off and fetches only the new data.
+
+Usage:
+    # Update with default 30-day lookback
+    python scripts/ingest_incremental.py \\
+        --assets ES MES VIX \\
+        --timeframes 1D
+
+    # Update with custom lookback
+    python scripts/ingest_incremental.py \\
+        --assets ES \\
+        --lookback-days 7
+
+    # Dry-run to see what would be fetched
+    python scripts/ingest_incremental.py \\
+        --assets ES \\
+        --dry-run
+
+    # Reset state for one or all assets
+    python scripts/ingest_incremental.py --reset-asset ES --timeframe 1D
+    python scripts/ingest_incremental.py --reset-all
+"""
+
+import sys
+import logging
+import argparse
+from pathlib import Path
+from datetime import datetime, timedelta
+import pytz
+
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+from data_ingestion import (
+    MockProvider,
+    IBDataProvider,
+    PolygonDataProvider,
+    DatabentoDataProvider,
+    CredentialLoader,
+)
+from data_ingestion.orchestrator import Orchestrator
+from data_ingestion.progress import ProgressTracker
+
+
+def setup_logging(verbose: bool = False) -> None:
+    """Configure logging for the script."""
+    level = logging.DEBUG if verbose else logging.INFO
+    
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Console handler
+    handler = logging.StreamHandler()
+    handler.setLevel(level)
+    handler.setFormatter(formatter)
+    
+    # Root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    root_logger.addHandler(handler)
+
+
+def initialize_providers(use_mock: bool = False) -> dict:
+    """
+    Initialize data providers.
+    
+    Args:
+        use_mock: If True, use MockProvider instead of real providers.
+        
+    Returns:
+        Dictionary mapping provider names to provider instances.
+    """
+    providers = {}
+    
+    if use_mock:
+        logging.info("Using MockProvider for all data")
+        providers['mock'] = MockProvider()
+    else:
+        # Try to initialize real providers with credentials
+        loader = CredentialLoader()
+        
+        # Interactive Brokers
+        try:
+            ib_creds = loader.load_credentials('interactive_brokers')
+            if ib_creds:
+                providers['ib'] = IBDataProvider(**ib_creds)
+                logging.info("Initialized Interactive Brokers provider")
+        except Exception as e:
+            logging.warning(f"Could not initialize Interactive Brokers: {e}")
+        
+        # Polygon.io
+        try:
+            polygon_creds = loader.load_credentials('polygon')
+            if polygon_creds:
+                providers['polygon'] = PolygonDataProvider(**polygon_creds)
+                logging.info("Initialized Polygon provider")
+        except Exception as e:
+            logging.warning(f"Could not initialize Polygon: {e}")
+        
+        # Databento
+        try:
+            databento_creds = loader.load_credentials('databento')
+            if databento_creds:
+                providers['databento'] = DatabentoDataProvider(**databento_creds)
+                logging.info("Initialized Databento provider")
+        except Exception as e:
+            logging.warning(f"Could not initialize Databento: {e}")
+        
+        # Fallback to MockProvider if no real providers available
+        if not providers:
+            logging.warning(
+                "No credentials found for real providers. Using MockProvider instead. "
+                "Set up credentials in .env or config/credentials.json to use real providers."
+            )
+            providers['mock'] = MockProvider()
+    
+    return providers
+
+
+def show_progress_state(progress_file: str) -> None:
+    """Display current progress state."""
+    tracker = ProgressTracker(progress_file)
+    summary = tracker.get_summary()
+    
+    logger = logging.getLogger(__name__)
+    
+    print("\n" + "="*80)
+    print("CURRENT INGESTION STATE")
+    print("="*80)
+    print(f"Total assets tracked: {summary['total_assets_tracked']}")
+    print(f"Total bars fetched: {summary['total_bars_fetched']:,}")
+    print(f"Total errors: {summary['total_errors']}")
+    print(f"Completed: {summary['completed_count']}")
+    print(f"Failed: {summary['failed_count']}")
+    print(f"Pending: {summary['pending_count']}")
+    
+    if summary['assets']:
+        print("\nPer-asset details:")
+        print("-" * 80)
+        for asset_info in summary['assets']:
+            print(
+                f"  {asset_info['asset']}/{asset_info['timeframe']:<6} | "
+                f"status={asset_info['status']:<10} | "
+                f"bars={asset_info['bars_fetched']:>6} | "
+                f"errors={asset_info['errors']}"
+            )
+            if asset_info['last_fetched']:
+                print(
+                    f"    └─ last fetched: {asset_info['last_fetched']}"
+                )
+    print("="*80 + "\n")
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Fetch incremental OHLCV data (only new data since last run)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    
+    # Asset selection
+    parser.add_argument(
+        '--assets',
+        nargs='+',
+        default=['ES', 'MES', 'VIX'],
+        help='Assets to fetch (default: ES MES VIX)'
+    )
+    
+    parser.add_argument(
+        '--timeframes',
+        nargs='+',
+        default=['1D'],
+        help='Timeframes to fetch (default: 1D)'
+    )
+    
+    # Incremental options
+    parser.add_argument(
+        '--lookback-days',
+        type=int,
+        default=30,
+        help='Days to lookback if no prior state exists (default: 30)'
+    )
+    
+    # Orchestrator options
+    parser.add_argument(
+        '--max-workers',
+        type=int,
+        default=3,
+        help='Maximum parallel fetch tasks (default: 3)'
+    )
+    
+    parser.add_argument(
+        '--max-retries',
+        type=int,
+        default=3,
+        help='Maximum retry attempts per task (default: 3)'
+    )
+    
+    parser.add_argument(
+        '--retry-delay',
+        type=float,
+        default=1.0,
+        help='Initial retry delay in seconds (default: 1.0)'
+    )
+    
+    parser.add_argument(
+        '--rate-limit',
+        type=int,
+        default=10,
+        help='Max requests per rate limit period (default: 10)'
+    )
+    
+    # Execution options
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Log what would be fetched without making API calls'
+    )
+    
+    parser.add_argument(
+        '--mock',
+        action='store_true',
+        help='Use MockProvider instead of real data providers'
+    )
+    
+    parser.add_argument(
+        '--no-validate',
+        action='store_true',
+        help='Skip data validation checks'
+    )
+    
+    # Progress file
+    parser.add_argument(
+        '--progress-file',
+        type=str,
+        default='.ingestion_state.json',
+        help='Path to progress state file (default: .ingestion_state.json)'
+    )
+    
+    # State management
+    parser.add_argument(
+        '--show-state',
+        action='store_true',
+        help='Display current ingestion state and exit'
+    )
+    
+    parser.add_argument(
+        '--reset-asset',
+        type=str,
+        help='Reset state for a specific asset'
+    )
+    
+    parser.add_argument(
+        '--reset-all',
+        action='store_true',
+        help='Reset all progress state'
+    )
+    
+    parser.add_argument(
+        '--verbose', '-v',
+        action='store_true',
+        help='Enable verbose logging'
+    )
+    
+    args = parser.parse_args()
+    
+    # Setup logging
+    setup_logging(verbose=args.verbose)
+    logger = logging.getLogger(__name__)
+    
+    # Handle state queries/resets
+    if args.show_state:
+        show_progress_state(args.progress_file)
+        return 0
+    
+    if args.reset_all:
+        tracker = ProgressTracker(args.progress_file)
+        tracker.reset_all()
+        logger.info("Reset all progress states")
+        return 0
+    
+    if args.reset_asset:
+        tracker = ProgressTracker(args.progress_file)
+        for timeframe in args.timeframes:
+            tracker.reset_state(args.reset_asset, timeframe)
+        logger.info(f"Reset state for {args.reset_asset}")
+        return 0
+    
+    logger.info("Starting incremental data ingestion")
+    logger.info(f"Assets: {args.assets}")
+    logger.info(f"Timeframes: {args.timeframes}")
+    logger.info(f"Lookback (if no prior data): {args.lookback_days} days")
+    
+    try:
+        # Get end date (today in UTC)
+        end_date = datetime.now(tz=pytz.UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        logger.info(f"End date: {end_date.date()}")
+        
+        # Initialize providers
+        providers = initialize_providers(use_mock=args.mock)
+        
+        if not providers:
+            logger.error("No data providers available")
+            return 1
+        
+        logger.info(f"Available providers: {', '.join(providers.keys())}")
+        
+        # Create orchestrator
+        orchestrator = Orchestrator(
+            providers=providers,
+            progress_file=args.progress_file,
+            max_workers=args.max_workers,
+            max_retries=args.max_retries,
+            retry_delay=args.retry_delay,
+            validate_data=not args.no_validate,
+            dry_run=args.dry_run,
+        )
+        
+        # Authenticate providers (skip for dry-run)
+        if not args.dry_run:
+            try:
+                orchestrator.authenticate_providers()
+            except Exception as e:
+                logger.error(f"Provider authentication failed: {e}")
+                if not args.mock:
+                    logger.info("Try --mock to use MockProvider instead")
+                return 1
+        
+        # Show current state before ingestion
+        logger.info("Current ingestion state:")
+        show_progress_state(args.progress_file)
+        
+        # Perform incremental ingestion
+        import time
+        orchestrator.start_time = time.time()
+        
+        # Use primary provider
+        provider = next(iter(providers.values()))
+        
+        results = orchestrator.ingest_incremental(
+            provider=provider,
+            assets=args.assets,
+            timeframes=args.timeframes,
+            end_date=end_date,
+            lookback_days=args.lookback_days,
+        )
+        
+        # Print summary
+        orchestrator.print_summary()
+        
+        # Return exit code based on success rate
+        summary = orchestrator.get_summary()
+        if summary['success_rate'] == 1.0:
+            logger.info("All tasks completed successfully")
+            return 0
+        elif summary['success_rate'] > 0.0:
+            logger.warning(f"Partial success: {summary['success_rate']:.1%} of tasks completed")
+            return 1
+        else:
+            logger.error("All tasks failed")
+            return 1
+    
+    except Exception as e:
+        logger.exception(f"Fatal error: {e}")
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,279 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Version Metadata Schema",
+  "description": "Schema for version metadata JSON files in the version management system",
+  "type": "object",
+  "required": [
+    "layer",
+    "version",
+    "asset_or_feature_set",
+    "creation_timestamp",
+    "data_range",
+    "record_count",
+    "schema_info"
+  ],
+  "properties": {
+    "layer": {
+      "type": "string",
+      "enum": ["cleaned", "features"],
+      "description": "Data layer being versioned"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^v\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version (e.g., v1.0.0)"
+    },
+    "asset_or_feature_set": {
+      "type": "string",
+      "description": "Asset name (e.g., MES, ES) or feature set name"
+    },
+    "creation_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when version was created (UTC)"
+    },
+    "data_range": {
+      "type": "object",
+      "required": ["start_timestamp", "end_timestamp"],
+      "properties": {
+        "start_timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Earliest timestamp in dataset"
+        },
+        "end_timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Latest timestamp in dataset"
+        }
+      }
+    },
+    "record_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of records in this version"
+    },
+    "schema_info": {
+      "type": "object",
+      "required": ["schema_version"],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "description": "Version identifier for schema (e.g., 1.0.0)"
+        },
+        "columns": {
+          "type": "array",
+          "description": "Column definitions",
+          "items": {
+            "type": "object",
+            "required": ["name", "data_type"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Column name"
+              },
+              "data_type": {
+                "type": "string",
+                "description": "Parquet data type (int64, double, string, timestamp[ns], etc.)"
+              },
+              "nullable": {
+                "type": "boolean",
+                "description": "Whether column can contain nulls"
+              },
+              "description": {
+                "type": "string",
+                "description": "Column description"
+              }
+            }
+          }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "description": "List of data files in this version",
+      "items": {
+        "type": "object",
+        "required": ["filename", "size_bytes", "format", "md5_checksum"],
+        "properties": {
+          "filename": {
+            "type": "string",
+            "description": "Filename relative to version directory"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "File size in bytes"
+          },
+          "format": {
+            "type": "string",
+            "enum": ["parquet", "json", "csv", "arrow"],
+            "description": "File format"
+          },
+          "md5_checksum": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$",
+            "description": "MD5 checksum for integrity verification"
+          },
+          "row_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Row count for tabular files"
+          }
+        }
+      }
+    },
+    "data_quality": {
+      "type": "object",
+      "description": "Data quality metrics and validation results",
+      "properties": {
+        "validation_status": {
+          "type": "string",
+          "enum": ["passed", "failed", "warnings"],
+          "description": "Overall validation status"
+        },
+        "quality_flags": {
+          "type": "array",
+          "description": "Quality issues or warnings",
+          "items": {
+            "type": "string"
+          }
+        },
+        "completeness_percentage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of non-null values"
+        },
+        "null_counts": {
+          "type": "object",
+          "description": "Null count per column",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "validation_checks": {
+          "type": "array",
+          "description": "List of validation checks that passed",
+          "items": {
+            "type": "string"
+          }
+        },
+        "validation_overrides": {
+          "type": "array",
+          "description": "Validation checks that were overridden",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "lineage": {
+      "type": "object",
+      "description": "Data lineage and dependencies",
+      "properties": {
+        "raw_sources": {
+          "type": "array",
+          "description": "Raw data sources used",
+          "items": {
+            "type": "object",
+            "properties": {
+              "asset": {
+                "type": "string"
+              },
+              "dates": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "date"
+                }
+              }
+            }
+          }
+        },
+        "cleaned_version": {
+          "type": "integer",
+          "description": "Cleaned data version used (for features)"
+        },
+        "feature_parameters": {
+          "type": "object",
+          "description": "Feature computation parameters",
+          "additionalProperties": true
+        },
+        "cleaning_parameters": {
+          "type": "object",
+          "description": "Cleaning parameters used",
+          "additionalProperties": true
+        },
+        "processing_script": {
+          "type": "string",
+          "description": "Script used for processing"
+        },
+        "processing_script_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$",
+          "description": "SHA-1 hash of processing script"
+        }
+      }
+    },
+    "changelog": {
+      "type": "array",
+      "description": "Version changelog history",
+      "items": {
+        "type": "object",
+        "required": ["version", "timestamp", "author", "change_type", "description"],
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "Version number"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this change was made"
+          },
+          "author": {
+            "type": "string",
+            "description": "Person or system making the change"
+          },
+          "change_type": {
+            "type": "string",
+            "enum": ["creation", "patch", "major", "deprecation", "freeze", "unfreeze"],
+            "description": "Type of change"
+          },
+          "description": {
+            "type": "string",
+            "description": "Description of what changed"
+          }
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "description": "Tags for version discovery (e.g., stable, production)",
+      "items": {
+        "type": "string"
+      }
+    },
+    "frozen": {
+      "type": "boolean",
+      "description": "Whether version is frozen against modifications",
+      "default": false
+    },
+    "freeze_timestamp": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "When version was frozen"
+    },
+    "creator": {
+      "type": "string",
+      "description": "User or system that created this version"
+    },
+    "environment": {
+      "type": "string",
+      "enum": ["development", "staging", "production"],
+      "description": "Environment this version was created for"
+    }
+  },
+  "additionalProperties": false
+}

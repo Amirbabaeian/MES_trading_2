@@ -1,0 +1,120 @@
+# Cloud Storage Configuration
+# 
+# This file configures cloud storage providers for bidirectional sync.
+# Supports: S3, GCS, Azure Blob Storage
+
+# Cloud storage provider configuration
+storage:
+  # Provider type: s3, gcs, or azure
+  provider: s3
+  
+  # Bucket/Container name
+  bucket: my-trading-data
+  
+  # Provider-specific settings
+  region: us-east-1                    # For S3
+  
+  # Storage class/tier (optional)
+  # S3: STANDARD, STANDARD_IA, GLACIER, DEEP_ARCHIVE
+  # GCS: STANDARD, NEARLINE, COLDLINE, ARCHIVE
+  # Azure: hot, cool, archive
+  storage_class: STANDARD
+  
+  # Credentials (all optional, can use environment variables or IAM roles)
+  credentials:
+    # AWS S3 credentials
+    aws_access_key_id: ${AWS_ACCESS_KEY_ID}
+    aws_secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+    
+    # GCS credentials (use service account JSON)
+    # project_id: your-gcp-project
+    # credentials_path: /path/to/service-account.json
+    
+    # Azure credentials
+    # connection_string: ${AZURE_STORAGE_CONNECTION_STRING}
+    # account_name: myaccount
+    # account_key: ${AZURE_STORAGE_ACCOUNT_KEY}
+
+# Sync engine configuration
+sync_state_db: .sync_state.db         # Path to sync state database
+
+# Conflict resolution strategy
+# Options:
+# - timestamp_wins: Newest file wins
+# - local_wins: Local file always wins
+# - cloud_wins: Cloud file always wins
+# - manual: Block sync and require manual resolution
+# - version_preserve: Keep both versions with suffix
+conflict_strategy: timestamp_wins
+
+# Sync engine tuning parameters
+max_workers: 4                         # Concurrent upload/download threads
+retry_attempts: 3                      # Number of retry attempts for failed transfers
+retry_delay_seconds: 5                 # Delay between retries
+
+# Example configurations for different providers:
+
+# ============================================================================
+# AWS S3 Example
+# ============================================================================
+# storage:
+#   provider: s3
+#   bucket: my-data-bucket
+#   region: us-west-2
+#   storage_class: STANDARD
+#   credentials:
+#     aws_access_key_id: ${AWS_ACCESS_KEY_ID}
+#     aws_secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+
+# ============================================================================
+# Google Cloud Storage Example
+# ============================================================================
+# storage:
+#   provider: gcs
+#   bucket: my-gcs-bucket
+#   credentials:
+#     project_id: my-gcp-project
+#     credentials_path: /home/user/.config/gcloud/service-account.json
+
+# ============================================================================
+# Azure Blob Storage Example
+# ============================================================================
+# storage:
+#   provider: azure
+#   bucket: my-container
+#   storage_class: cool
+#   credentials:
+#     connection_string: ${AZURE_STORAGE_CONNECTION_STRING}
+#     # OR
+#     account_name: mystorageaccount
+#     account_key: ${AZURE_STORAGE_ACCOUNT_KEY}
+
+# ============================================================================
+# Usage Examples
+# ============================================================================
+#
+# Upload local directory to cloud:
+#   python scripts/sync_data.py upload \
+#     --config config/storage_config.yaml \
+#     --local-dir data/raw \
+#     --cloud-prefix raw/
+#
+# Download cloud directory to local:
+#   python scripts/sync_data.py download \
+#     --config config/storage_config.yaml \
+#     --cloud-prefix cleaned/ \
+#     --local-dir data/cleaned
+#
+# Bidirectional sync:
+#   python scripts/sync_data.py sync \
+#     --config config/storage_config.yaml \
+#     --local-dir data/ \
+#     --cloud-prefix data/
+#
+# View sync status:
+#   python scripts/sync_data.py status \
+#     --config config/storage_config.yaml
+#
+# Retry failed transfers:
+#   python scripts/sync_data.py retry \
+#     --config config/storage_config.yaml
