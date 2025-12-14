@@ -1,0 +1,141 @@
+# Databento Data Provider Configuration Template
+#
+# This template shows the structure and available options for configuring
+# the Databento (DatabentoDataProvider) adapter.
+#
+# Databento provides institutional-grade market data with:
+# - Low-latency tick data and aggregations
+# - Support for futures, equities, options, crypto
+# - Multiple market datasets (GLBX for CME/CBOT, XNAS/XNYS for equities, etc.)
+# - Both REST and streaming APIs
+#
+# Reference: https://databento.com/docs
+
+provider:
+  type: "databento"
+  name: "Databento"
+  
+# Connection parameters
+connection:
+  base_url: "https://api.databento.com"  # Databento API endpoint
+  version: "v0"                           # API version
+  
+# Authentication - REQUIRED
+authentication:
+  method: "api_key"                       # Databento uses API keys
+  api_key: "${DATABENTO_API_KEY}"         # Your Databento API key
+  client: "${DATABENTO_CLIENT}"           # Your Databento client ID (usually email)
+  
+  # Note: Get credentials from: https://databento.com/docs/api/reference#authentication
+  
+# Default dataset configuration
+dataset:
+  # Databento organizes data by dataset:
+  # - GLBX: CME/CBOT global derivatives (ES, NQ, YM, GC, CL, etc.)
+  # - XNAS: NASDAQ equities
+  # - XNYS: NYSE equities
+  # - OPRA: Options data
+  # - CRYO/ERGO: Cryptocurrency data
+  default: "GLBX"                         # Default dataset (CME futures)
+  
+  # Datasets to enable
+  enabled:
+    - "GLBX"                              # Futures: ES, NQ, YM, GC, CL, etc.
+    - "XNAS"                              # Equities: NASDAQ
+    - "XNYS"                              # Equities: NYSE
+    
+# Rate limiting
+rate_limiting:
+  # Databento is generally generous with rate limits
+  # Typical limits: 10+ requests/second depending on plan
+  requests_per_second: 10                 # High rate limit
+  burst_size: 5                           # Allow larger bursts
+  
+# Retry policy
+retry:
+  max_retries: 5
+  initial_delay_seconds: 0.1
+  max_delay_seconds: 60.0
+  exponential_base: 2.0
+  
+# Supported data
+data:
+  # Asset classes supported by Databento
+  asset_classes:
+    - "futures"                           # CME/CBOT futures
+    - "stocks"                            # US equities
+    - "options"                           # Equity options
+    - "crypto"                            # Bitcoin, Ethereum, etc.
+  
+  # Timeframes supported
+  timeframes:
+    - "1m"                                # Minute
+    - "5m"
+    - "15m"
+    - "30m"
+    - "60m"                               # Hour
+    - "1H"
+    - "1D"                                # Daily
+    - "D"
+    - "1W"                                # Weekly
+    - "W"
+    - "1M"                                # Monthly
+    - "M"
+  
+  # Default timeframe
+  default_timeframe: "1D"
+  
+# Data record types
+record_types:
+  # Databento supports various record types
+  # For OHLCV data, typically use "ohlcv"
+  ohlcv: "ohlcv"                          # Aggregated OHLCV bars
+  trades: "trades"                        # Individual trades (tick data)
+  quotes: "quotes"                        # Bid/ask quotes (tick data)
+  
+# Logging
+logging:
+  level: "INFO"                           # DEBUG, INFO, WARNING, ERROR
+  
+# Example symbols
+example_symbols:
+  # Futures (CME/CBOT)
+  - "ES"                                  # E-mini S&P 500
+  - "MES"                                 # Micro E-mini S&P 500
+  - "NQ"                                  # E-mini Nasdaq
+  - "YM"                                  # E-mini Dow
+  - "RTY"                                 # E-mini Russell 2000
+  
+  # Commodities
+  - "GC"                                  # Gold
+  - "CL"                                  # Crude Oil
+  - "NG"                                  # Natural Gas
+  
+  # Equities (stocks)
+  - "AAPL"                                # Apple
+  - "MSFT"                                # Microsoft
+  - "GOOGL"                               # Google
+  
+  # Crypto
+  - "BTC"                                 # Bitcoin
+  - "ETH"                                 # Ethereum
+  
+# Databento specific features
+databento_features:
+  # Type of data to fetch
+  include_bid_ask: false                  # Include bid/ask (quote data)
+  include_trades: true                    # Include trade data
+  
+  # Data adjustments
+  use_adjusted_prices: false              # Use adjusted vs. unadjusted
+  
+  # Encoding format
+  record_format: "csv"                    # CSV format (also supports AVRO binary)
+  
+# Notes:
+# - API key and client ID are REQUIRED
+# - Get credentials from: https://databento.com/docs/api/reference#authentication
+# - Databento is excellent for futures data (CME products)
+# - Provides institutional-grade data quality and granularity
+# - Good for both historical and real-time use cases
+# - Free tier available for testing

@@ -1,0 +1,106 @@
+# Polygon.io Data Provider Configuration Template
+#
+# This template shows the structure and available options for configuring
+# the Polygon.io (PolygonDataProvider) adapter.
+#
+# Polygon.io pricing tiers:
+# - Free: 5 requests/minute, limited historical data
+# - Starter: 30 requests/minute
+# - Professional: 600 requests/minute
+# - Enterprise: Custom limits
+#
+# Reference: https://polygon.io/docs/getting-started
+
+provider:
+  type: "polygon"
+  name: "Polygon.io"
+  
+# Connection parameters
+connection:
+  base_url: "https://api.polygon.io"  # Polygon.io API endpoint
+  timeout_seconds: 30                 # HTTP request timeout
+  
+# Authentication - REQUIRED
+authentication:
+  method: "api_key"                   # Only method: API key based
+  api_key: "${POLYGON_API_KEY}"       # Your Polygon.io API key (set via environment variable)
+  
+  # Note: Polygon.io uses API keys, not usernames/passwords
+  # Get your key from: https://polygon.io/dashboard/api-keys
+  
+# Rate limiting
+rate_limiting:
+  # Adjust based on your Polygon.io tier:
+  # - Free: 5 requests/minute -> 0.083 req/sec
+  # - Starter: 30 requests/minute -> 0.5 req/sec
+  # - Professional: 600 requests/minute -> 10 req/sec
+  # - Enterprise: contact sales
+  requests_per_second: 4              # Conservative default (Starter tier)
+  burst_size: 3                       # Allow small bursts
+  
+# Retry policy
+retry:
+  max_retries: 5                      # Polygon sometimes needs more retries
+  initial_delay_seconds: 0.5
+  max_delay_seconds: 120.0            # Longer max delay for 429 errors
+  exponential_base: 2.0
+  
+# Supported data
+data:
+  # Asset classes supported by Polygon
+  asset_classes:
+    - "stocks"                        # US equities (NYSE, NASDAQ, etc.)
+    - "options"                       # Stock options
+    - "forex"                         # Foreign exchange pairs
+    - "crypto"                        # Cryptocurrency
+    - "indices"                       # Indices (SPY, QQQ, DIA, etc.)
+  
+  # Timeframes supported by Polygon
+  timeframes:
+    - "1m"                            # Minute
+    - "5m"
+    - "15m"
+    - "30m"
+    - "60m"                           # Hour
+    - "1D"                            # Daily
+    - "1W"                            # Weekly
+    - "1M"                            # Monthly
+    - "1Q"                            # Quarterly
+    - "1Y"                            # Yearly
+  
+  # Default timeframe
+  default_timeframe: "1D"
+  
+  # Maximum records per API request
+  max_records_per_request: 50000      # Polygon's typical limit
+  
+# Logging
+logging:
+  level: "INFO"                       # DEBUG, INFO, WARNING, ERROR
+  
+# Example symbols (stocks, equities)
+example_symbols:
+  # Equity indices (ETF proxies for futures indices)
+  - "SPY"                             # S&P 500 proxy (ES equivalent)
+  - "QQQ"                             # Nasdaq proxy (NQ equivalent)
+  - "DIA"                             # Dow proxy (YM equivalent)
+  
+  # Individual stocks
+  - "AAPL"                            # Apple
+  - "MSFT"                            # Microsoft
+  - "GOOGL"                           # Google/Alphabet
+  - "AMZN"                            # Amazon
+  - "TSLA"                            # Tesla
+  - "META"                            # Meta Platforms
+  
+# Polygon.io specific features
+polygon_features:
+  use_adjusted_data: true             # Use adjusted prices (splits/dividends)
+  include_extended_hours: false       # Include pre/post market data
+  
+# Notes:
+# - API key is REQUIRED. Get it from https://polygon.io/dashboard/api-keys
+# - Free tier has limited historical data (typically ~2 years)
+# - Consider upgrading tier if you need longer historical data or higher request rates
+# - Polygon provides excellent data quality for US equities and options
+# - Not ideal for futures data (use Interactive Brokers or Databento for that)

@@ -1,0 +1,86 @@
+# Interactive Brokers Data Provider Configuration Template
+# 
+# This template shows the structure and available options for configuring
+# the Interactive Brokers (IBDataProvider) adapter.
+#
+# For authentication, you can use:
+# 1. TWS (Trader Workstation) - interactive desktop application on localhost:7497
+# 2. IB Gateway - lightweight server version, typically localhost:4001 for paper or 7497 for live
+#
+# Reference:
+# - TWS/Gateway typically run on 127.0.0.1
+# - Paper trading port: 7498
+# - Live trading port: 7497
+# - Custom ports can be configured in TWS/Gateway settings
+
+provider:
+  type: "interactive_brokers"
+  name: "Interactive Brokers"
+  
+# Connection parameters
+connection:
+  host: "127.0.0.1"          # TWS/Gateway host (localhost for local connection)
+  port: 7497                 # TWS/Gateway port (7497=live, 7498=paper)
+  client_id: 1               # Unique client ID for this connection
+  account_id: "DU123456"     # Your Interactive Brokers account ID (required)
+  
+# Authentication
+authentication:
+  method: "tws_gateway"      # Only method supported by Interactive Brokers
+  # Note: IB authentication is handled via TWS/Gateway connection
+  # You must have TWS or Gateway running before calling authenticate()
+  
+# Rate limiting
+rate_limiting:
+  requests_per_second: 5     # Conservative rate limit for IB API
+  burst_size: 3              # Allow small bursts
+  
+# Retry policy
+retry:
+  max_retries: 3
+  initial_delay_seconds: 1.0
+  max_delay_seconds: 60.0
+  exponential_base: 2.0
+  
+# Supported data
+data:
+  # Asset classes supported by this adapter
+  asset_classes:
+    - "futures"              # CME/CBOT futures
+    - "stocks"               # US equities
+    - "indices"              # Index futures (ES, NQ, YM, etc.)
+  
+  # Timeframes supported
+  timeframes:
+    - "1m"                   # Minute
+    - "5m"
+    - "15m"
+    - "30m"
+    - "60m"                  # Hour
+    - "1D"                   # Daily
+    - "1W"                   # Weekly
+    - "1M"                   # Monthly
+  
+  # Default timeframe when not specified
+  default_timeframe: "1D"
+  
+# Logging
+logging:
+  level: "INFO"              # DEBUG, INFO, WARNING, ERROR
+  
+# Example symbols (used for testing)
+# Replace with actual symbols you trade
+example_symbols:
+  - "ES"                     # E-mini S&P 500
+  - "MES"                    # Micro E-mini S&P 500
+  - "NQ"                     # E-mini Nasdaq
+  - "YM"                     # E-mini Dow
+  - "AAPL"                   # Apple stock
+  - "MSFT"                   # Microsoft stock
+  
+# Notes:
+# - TWS or IB Gateway MUST be running for authentication to succeed
+# - Check IB's API settings in TWS: File > API > Settings
+# - Ensure "Enable ActiveX and Socket Clients" is checked
+# - Allow only specified IP addresses if using security restrictions
+# - Default account will be used if account_id is not specified in request
