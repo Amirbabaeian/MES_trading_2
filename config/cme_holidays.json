@@ -1,0 +1,146 @@
+{
+  "full_trading_halts": [
+    {
+      "name": "New Year's Day",
+      "month": 1,
+      "day": 1,
+      "years": [2020, 2021, 2022, 2023, 2024, 2025]
+    },
+    {
+      "name": "Good Friday",
+      "date": "2020-04-10"
+    },
+    {
+      "name": "Good Friday",
+      "date": "2021-04-02"
+    },
+    {
+      "name": "Good Friday",
+      "date": "2022-04-15"
+    },
+    {
+      "name": "Good Friday",
+      "date": "2023-04-07"
+    },
+    {
+      "name": "Good Friday",
+      "date": "2024-03-29"
+    },
+    {
+      "name": "Good Friday",
+      "date": "2025-04-18"
+    },
+    {
+      "name": "Independence Day",
+      "month": 7,
+      "day": 4,
+      "years": [2020, 2021, 2022, 2023, 2024, 2025]
+    },
+    {
+      "name": "Thanksgiving",
+      "date": "2020-11-26"
+    },
+    {
+      "name": "Thanksgiving",
+      "date": "2021-11-25"
+    },
+    {
+      "name": "Thanksgiving",
+      "date": "2022-11-24"
+    },
+    {
+      "name": "Thanksgiving",
+      "date": "2023-11-23"
+    },
+    {
+      "name": "Thanksgiving",
+      "date": "2024-11-28"
+    },
+    {
+      "name": "Thanksgiving",
+      "date": "2025-11-27"
+    },
+    {
+      "name": "Christmas",
+      "month": 12,
+      "day": 25,
+      "years": [2020, 2021, 2022, 2023, 2024, 2025]
+    }
+  ],
+  "early_closes": [
+    {
+      "name": "Day before Thanksgiving",
+      "date": "2020-11-25",
+      "close_time_et": "14:00"
+    },
+    {
+      "name": "Day before Thanksgiving",
+      "date": "2021-11-24",
+      "close_time_et": "14:00"
+    },
+    {
+      "name": "Day before Thanksgiving",
+      "date": "2022-11-23",
+      "close_time_et": "14:00"
+    },
+    {
+      "name": "Day before Thanksgiving",
+      "date": "2023-11-22",
+      "close_time_et": "14:00"
+    },
+    {
+      "name": "Day before Thanksgiving",
+      "date": "2024-11-27",
+      "close_time_et": "14:00"
+    },
+    {
+      "name": "Day before Thanksgiving",
+      "date": "2025-11-26",
+      "close_time_et": "14:00"
+    },
+    {
+      "name": "Day before Christmas",
+      "date": "2020-12-24",
+      "close_time_et": "13:30"
+    },
+    {
+      "name": "Day before Christmas",
+      "date": "2021-12-24",
+      "close_time_et": "13:30"
+    },
+    {
+      "name": "Day before Christmas",
+      "date": "2022-12-23",
+      "close_time_et": "13:30"
+    },
+    {
+      "name": "Day before Christmas",
+      "date": "2023-12-22",
+      "close_time_et": "13:30"
+    },
+    {
+      "name": "Day before Christmas",
+      "date": "2024-12-24",
+      "close_time_et": "13:30"
+    },
+    {
+      "name": "Day before Christmas",
+      "date": "2025-12-24",
+      "close_time_et": "13:30"
+    }
+  ],
+  "schedule_notes": {
+    "es_mes": {
+      "regular_open_time": "09:30",
+      "regular_close_time": "16:00",
+      "globex_open_time": "18:00",
+      "globex_close_time": "17:00",
+      "description": "ES/MES: CME Globex Sunday 6pm ET to Friday 5pm ET. RTH: Mon-Fri 9:30am-4pm ET"
+    },
+    "vix": {
+      "regular_open_time": "09:30",
+      "regular_close_time": "16:15",
+      "note": "VIX futures have different schedule than S&P 500"
+    }
+  }
+}

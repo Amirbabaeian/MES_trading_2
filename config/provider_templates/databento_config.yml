@@ -1,0 +1,210 @@
+# Databento Data Provider Configuration Template
+# 
+# This file provides a configuration template for the Databento adapter.
+# Copy this to your local configuration and fill in your API key.
+# 
+# WARNING: Keep your API key secure. Never commit actual credentials to version control.
+# Use environment variables or secret management for production deployments.
+
+# API connection settings
+api:
+  # Databento API base URL
+  base_url: "https://api.databento.com"
+  
+  # API version
+  version: "v0"
+  
+  # API key (use environment variable: DATABENTO_API_KEY)
+  api_key: "${DATABENTO_API_KEY}"
+  
+  # Request timeout in seconds
+  timeout: 30
+  
+  # Connection pooling
+  use_connection_pool: true
+  
+  # Protocol: rest (REST API) or native (native streaming)
+  protocol: "rest"
+
+# Rate limiting
+# Databento rate limits vary by subscription tier
+rate_limiting:
+  # Default rate limit (requests per minute)
+  # Varies by subscription; adjust based on your tier
+  max_requests: 50
+  
+  # Rate limit period in seconds
+  period_seconds: 60.0
+  
+  # Automatic backoff when rate limited
+  enable_backoff: true
+  
+  # Maximum backoff delay in seconds
+  max_backoff_seconds: 60.0
+
+# Retry configuration
+retry:
+  # Maximum retry attempts for failed requests
+  max_retries: 3
+  
+  # Initial backoff delay in seconds
+  base_delay: 1.0
+  
+  # Maximum backoff delay in seconds
+  max_delay: 60.0
+  
+  # Exponential backoff multiplier
+  exponential_base: 2.0
+  
+  # Add random jitter to prevent thundering herd
+  jitter: true
+  
+  # Retry on these HTTP status codes
+  retryable_status_codes:
+    - 429  # Too Many Requests
+    - 500  # Internal Server Error
+    - 502  # Bad Gateway
+    - 503  # Service Unavailable
+    - 504  # Gateway Timeout
+
+# Data fetching options
+data:
+  # Data schema to use
+  # Options: "ohlcv", "trade", "quote", "imbalance"
+  schema: "ohlcv"
+  
+  # Default timeframe for OHLCV aggregation
+  default_timeframe: "1D"
+  
+  # Supported timeframes
+  supported_timeframes:
+    - "1M"    # 1 minute
+    - "5M"    # 5 minutes
+    - "15M"   # 15 minutes
+    - "30M"   # 30 minutes
+    - "1H"    # 1 hour
+    - "1D"    # 1 day (default)
+    - "1W"    # 1 week
+    - "1MO"   # 1 month
+  
+  # Maximum bars per request (Databento limit)
+  max_bars_per_request: 100000
+  
+  # Enable automatic pagination for large date ranges
+  auto_pagination: true
+  
+  # Pagination batch size (days per request)
+  pagination_batch_days: 365
+  
+  # Request timeout in seconds
+  request_timeout: 30
+  
+  # Data format: "csv" or "dbk" (binary DBK format)
+  format: "csv"
+
+# Symbol configuration
+symbols:
+  # Asset classes to support
+  supported_asset_classes:
+    - "EQUITY"
+    - "FUTURE"
+    - "OPTION"
+  
+  # Default symbols for monitoring
+  defaults:
+    - "ES"     # E-mini S&P 500
+    - "MES"    # Micro E-mini S&P 500
+    - "NQ"     # E-mini Nasdaq-100
+    - "AAPL"   # Apple stock
+    - "SPY"    # SPY ETF
+  
+  # Venue/exchange filters
+  venues:
+    - "CBOE"   # Chicago Board Options Exchange
+    - "CME"    # Chicago Mercantile Exchange
+    - "NASDAQ" # NASDAQ
+    - "NYSE"   # New York Stock Exchange
+
+# Data adjustments
+adjustments:
+  # Apply corporate action adjustments
+  apply_corporate_actions: true
+  
+  # Handle stock splits
+  handle_splits: true
+  
+  # Handle dividends
+  handle_dividends: true
+
+# Streaming configuration (for real-time data)
+streaming:
+  # Enable streaming market data
+  enable: false
+  
+  # Streaming protocol
+  protocol: "rest"
+  
+  # Streaming heartbeat interval (seconds)
+  heartbeat_interval: 5
+  
+  # Maximum reconnection attempts
+  max_reconnect_attempts: 5
+
+# Caching
+caching:
+  # Enable response caching
+  enable_cache: true
+  
+  # Cache TTL in seconds (24 hours)
+  cache_ttl: 86400
+  
+  # Cache directory for persistent caching
+  cache_dir: ".cache/databento"
+  
+  # Cache binary DBK format (more efficient)
+  cache_binary: true
+
+# Logging
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+  
+  # Log API requests and responses
+  log_api_calls: true
+  
+  # Log rate limit events
+  log_rate_limit: true
+  
+  # Log data parsing/conversion
+  log_parsing: false
+  
+  # Log response sizes
+  log_response_size: false
+
+# Performance optimization
+performance:
+  # Enable compression for downloads
+  use_compression: true
+  
+  # Compression format: "gzip" or "brotli"
+  compression_format: "gzip"
+  
+  # Parallel requests for pagination
+  parallel_pagination: false
+  
+  # Max parallel requests (if enabled)
+  max_parallel_requests: 3
+
+# Feature flags
+features:
+  # Support tick-level data (trade by trade)
+  tick_data: false
+  
+  # Support quote/bid-ask data
+  quotes: false
+  
+  # Support native binary DBN format
+  binary_dbk: false
+  
+  # Support imbalance data
+  imbalance_data: false

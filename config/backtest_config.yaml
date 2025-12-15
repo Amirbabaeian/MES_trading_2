@@ -1,0 +1,86 @@
+# Backtest Configuration Example
+# 
+# This file demonstrates all available configuration parameters for the backtesting engine.
+# Load with: BacktestConfig.from_yaml('config/backtest_config.yaml')
+
+# Basic backtest parameters
+initial_capital: 100000.0           # Starting cash for backtest ($)
+commission: 0.001                   # Trading commission (0.1% = 0.001)
+slippage: 0.0001                    # Price slippage per trade (0.01% = 0.0001)
+cash_required_pct: 0.10             # Percent of portfolio to hold as cash (10%)
+
+# Environment configuration
+environment: dev                    # 'dev' for testing, 'production' for live
+verbose: false                      # Enable verbose logging
+
+# Futures contract specifications
+# These define the contract multiplier, tick size, and margin requirements
+futures_specs:
+  MES:
+    symbol: MES
+    multiplier: 5.0                 # $5 per index point (MES is 1/10 of ES)
+    tick_size: 0.25                 # Minimum price movement is 0.25 index points
+    margin_requirement: 300.0       # Approximate initial margin per contract
+    contract_size: 1.0              # Contracts always have size 1.0
+  
+  ES:
+    symbol: ES
+    multiplier: 50.0                # $50 per index point
+    tick_size: 0.25                 # Minimum price movement is 0.25 index points
+    margin_requirement: 12500.0     # Approximate initial margin per contract
+    contract_size: 1.0              # Contracts always have size 1.0
+  
+  # Add more contracts as needed
+  # NQ:
+  #   symbol: NQ
+  #   multiplier: 20.0
+  #   tick_size: 0.25
+  #   margin_requirement: 12500.0
+  #   contract_size: 1.0
+
+# Strategy-specific parameters
+# These are custom parameters passed to your strategy classes
+strategy_params:
+  # Example: Moving Average Crossover Strategy
+  moving_average_period: 20         # Period for moving average calculation
+  entry_threshold: 0.001            # Entry signal threshold
+  exit_threshold: -0.001            # Exit signal threshold
+  
+  # Example: Position sizing
+  position_size: 1                  # Number of contracts per trade
+  max_positions: 3                  # Maximum concurrent positions
+  
+  # Example: Risk management
+  stop_loss_pct: 0.02               # Stop loss at 2% below entry
+  take_profit_pct: 0.05             # Take profit at 5% above entry
+  max_daily_loss: 5000              # Maximum loss per day ($)
+  
+  # Add your own custom parameters here
+
+# Notes on Parameters:
+#
+# commission:
+#   - Typical values: 0.0005 (0.05%) to 0.001 (0.1%)
+#   - Applied as percentage to trade value
+#   - Example: Selling $100,000 with 0.001 commission = $100 fee
+#
+# slippage:
+#   - Represents price gap between order placement and execution
+#   - Typical values: 0.0001 (0.01%) to 0.001 (0.1%)
+#   - Applied to each trade entry and exit
+#   - Example: Entry at 100.0 with 0.0001 slippage = 100.01 actual entry
+#
+# multiplier:
+#   - Converts index points to dollar value
+#   - MES: 5.0 = one point move = $5 profit/loss
+#   - ES: 50.0 = one point move = $50 profit/loss
+#
+# margin_requirement:
+#   - Approximate initial margin for the contract
+#   - Actual requirements vary by broker
+#   - Used for portfolio management and risk calculations
+#
+# cash_required_pct:
+#   - Reserve cash to avoid margin calls
+#   - 10% = keep 10% of portfolio as cash reserve
+#   - Higher percentages = more conservative

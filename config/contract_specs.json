@@ -1,0 +1,44 @@
+{
+  "ES": {
+    "name": "E-mini S&P 500 Futures",
+    "exchange": "CME",
+    "contract_type": "equity_index",
+    "expiration_cycle": "quarterly",
+    "expiration_months": [3, 6, 9, 12],
+    "description": "Full-sized S&P 500 Futures. Quarterly expirations: March, June, September, December",
+    "tick_size": 0.25,
+    "multiplier": 50.0,
+    "first_notice_day_offset": -11,
+    "last_trading_day_offset": -1,
+    "roll_days_before_expiration": 7,
+    "notes": "CME Globex: Sunday 18:00 ET to Friday 17:00 ET. RTH: 09:30-16:00 ET Mon-Fri"
+  },
+  "MES": {
+    "name": "E-mini S&P 500 Micro Futures",
+    "exchange": "CME",
+    "contract_type": "equity_index",
+    "expiration_cycle": "quarterly",
+    "expiration_months": [3, 6, 9, 12],
+    "description": "Micro-sized S&P 500 Futures. Quarterly expirations: March, June, September, December",
+    "tick_size": 0.25,
+    "multiplier": 5.0,
+    "first_notice_day_offset": -11,
+    "last_trading_day_offset": -1,
+    "roll_days_before_expiration": 7,
+    "notes": "CME Globex: Sunday 18:00 ET to Friday 17:00 ET. RTH: 09:30-16:00 ET Mon-Fri"
+  },
+  "VIX": {
+    "name": "Volatility Index Futures",
+    "exchange": "CBOE",
+    "contract_type": "volatility",
+    "expiration_cycle": "monthly",
+    "expiration_months": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    "description": "CBOE Volatility Index Futures. Monthly expirations on the 30-calendar day",
+    "tick_size": 0.05,
+    "multiplier": 100.0,
+    "first_notice_day_offset": -30,
+    "last_trading_day_offset": -1,
+    "roll_days_before_expiration": 3,
+    "notes": "Expires 30 calendar days before the third Friday of the following month"
+  }
+}
