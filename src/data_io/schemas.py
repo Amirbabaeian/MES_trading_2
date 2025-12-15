@@ -1,287 +1,174 @@
 """
-Schema definitions for Parquet data validation.
+Schema definitions for data validation in the hybrid versioning system.
 
-Provides schema definitions for:
-- OHLCV (Open, High, Low, Close, Volume) data
-- Feature datasets
-- Raw, cleaned, and features layers
+This module provides predefined schemas for common data types (OHLCV, features)
+and utilities for schema management and validation.
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
-from enum import Enum
+from typing import Dict, Any, Optional, List
+import pyarrow as pa
 
 
-class SchemaEnforcementMode(str, Enum):
-    """Schema enforcement modes for read/write operations."""
-    STRICT = "strict"  # Fail if schema doesn't match exactly
-    COERCE = "coerce"  # Try to coerce data types
-    IGNORE = "ignore"  # Warn but don't fail
+# OHLCV Schema (Open, High, Low, Close, Volume)
+# Standard schema for raw and cleaned market data
+OHLCV_SCHEMA = pa.schema([
+    pa.field("timestamp", pa.timestamp("us")),  # Microsecond precision
+    pa.field("asset", pa.string()),              # Asset identifier (e.g., "MES", "ES", "VIX")
+    pa.field("open", pa.float64()),
+    pa.field("high", pa.float64()),
+    pa.field("low", pa.float64()),
+    pa.field("close", pa.float64()),
+    pa.field("volume", pa.uint64()),
+])
+
+# Features Schema
+# For engineered feature datasets with flexible structure
+FEATURES_SCHEMA = pa.schema([
+    pa.field("timestamp", pa.timestamp("us")),
+    pa.field("asset", pa.string()),
+    pa.field("feature_set", pa.string()),        # Identifier for feature set version
+    pa.field("features", pa.struct([             # Flexible nested structure
+        pa.field("sma_20", pa.float64(), nullable=True),
+        pa.field("sma_50", pa.float64(), nullable=True),
+        pa.field("ema_12", pa.float64(), nullable=True),
+        pa.field("ema_26", pa.float64(), nullable=True),
+        pa.field("rsi_14", pa.float64(), nullable=True),
+        pa.field("macd", pa.float64(), nullable=True),
+        pa.field("macd_signal", pa.float64(), nullable=True),
+        pa.field("bollinger_upper", pa.float64(), nullable=True),
+        pa.field("bollinger_lower", pa.float64(), nullable=True),
+        pa.field("atr_14", pa.float64(), nullable=True),
+    ])),
+])
 
 
-@dataclass
-class ColumnSchema:
-    """Definition of a single column in a dataset."""
-    name: str
-    data_type: str  # Parquet type: int32, int64, float, double, string, timestamp[ns], etc.
-    nullable: bool = True
-    description: Optional[str] = None
+class SchemaRegistry:
+    """
+    Registry for managing and retrieving data schemas.
     
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary representation."""
-        return {
-            "name": self.name,
-            "data_type": self.data_type,
-            "nullable": self.nullable,
-            "description": self.description,
+    Provides centralized management of predefined schemas and support for
+    custom schema definitions.
+    """
+    
+    def __init__(self):
+        """Initialize schema registry with default schemas."""
+        self._schemas: Dict[str, pa.Schema] = {
+            "ohlcv": OHLCV_SCHEMA,
+            "features": FEATURES_SCHEMA,
         }
-
-
-@dataclass
-class DataSchema:
-    """Schema definition for a dataset."""
-    name: str
-    version: str
-    description: str
-    columns: List[ColumnSchema]
-    metadata: Optional[Dict[str, str]] = None
     
-    def get_column_names(self) -> List[str]:
-        """Get list of column names."""
-        return [col.name for col in self.columns]
+    def register(self, name: str, schema: pa.Schema) -> None:
+        """
+        Register a new schema.
+        
+        Args:
+            name: Unique identifier for the schema
+            schema: PyArrow schema object
+            
+        Raises:
+            ValueError: If schema name already exists
+        """
+        if name in self._schemas:
+            raise ValueError(f"Schema '{name}' already registered")
+        self._schemas[name] = schema
     
-    def get_required_columns(self) -> List[str]:
-        """Get list of non-nullable column names."""
-        return [col.name for col in self.columns if not col.nullable]
+    def get(self, name: str) -> pa.Schema:
+        """
+        Retrieve a registered schema by name.
+        
+        Args:
+            name: Schema identifier
+            
+        Returns:
+            PyArrow schema object
+            
+        Raises:
+            KeyError: If schema name not found
+        """
+        if name not in self._schemas:
+            raise KeyError(f"Schema '{name}' not found in registry")
+        return self._schemas[name]
     
-    def get_optional_columns(self) -> List[str]:
-        """Get list of nullable column names."""
-        return [col.name for col in self.columns if col.nullable]
+    def list_schemas(self) -> List[str]:
+        """Get list of all registered schema names."""
+        return list(self._schemas.keys())
     
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary representation."""
-        return {
-            "name": self.name,
-            "version": self.version,
-            "description": self.description,
-            "columns": [col.to_dict() for col in self.columns],
-            "metadata": self.metadata or {},
-        }
-
-
-# ============================================================================
-# Predefined Schemas
-# ============================================================================
-
-# OHLCV Schema - used for raw and cleaned data layers
-OHLCV_SCHEMA = DataSchema(
-    name="ohlcv",
-    version="1.0.0",
-    description="Open, High, Low, Close, Volume candlestick data",
-    columns=[
-        ColumnSchema(
-            name="timestamp",
-            data_type="timestamp[ns]",
-            nullable=False,
-            description="Trade timestamp (UTC)"
-        ),
-        ColumnSchema(
-            name="open",
-            data_type="double",
-            nullable=False,
-            description="Opening price"
-        ),
-        ColumnSchema(
-            name="high",
-            data_type="double",
-            nullable=False,
-            description="Highest price"
-        ),
-        ColumnSchema(
-            name="low",
-            data_type="double",
-            nullable=False,
-            description="Lowest price"
-        ),
-        ColumnSchema(
-            name="close",
-            data_type="double",
-            nullable=False,
-            description="Closing price"
-        ),
-        ColumnSchema(
-            name="volume",
-            data_type="int64",
-            nullable=False,
-            description="Volume in contracts"
-        ),
-    ],
-    metadata={
-        "asset": "dynamic",
-        "frequency": "configurable",
-        "source": "market_data_feed",
-    }
-)
-
-# Price Volatility Features Schema
-PRICE_VOLATILITY_SCHEMA = DataSchema(
-    name="price_volatility",
-    version="1.0.0",
-    description="Price volatility indicators and features",
-    columns=[
-        ColumnSchema(
-            name="timestamp",
-            data_type="timestamp[ns]",
-            nullable=False,
-            description="Feature timestamp (UTC)"
-        ),
-        ColumnSchema(
-            name="volatility_30d",
-            data_type="double",
-            nullable=True,
-            description="30-day rolling volatility"
-        ),
-        ColumnSchema(
-            name="volatility_60d",
-            data_type="double",
-            nullable=True,
-            description="60-day rolling volatility"
-        ),
-        ColumnSchema(
-            name="volatility_ratio",
-            data_type="double",
-            nullable=True,
-            description="Ratio of 30d to 60d volatility"
-        ),
-        ColumnSchema(
-            name="price_range_pct",
-            data_type="double",
-            nullable=True,
-            description="Daily price range as percentage"
-        ),
-    ],
-    metadata={
-        "category": "volatility",
-        "window_30d": "rolling_window",
-        "window_60d": "rolling_window",
-    }
-)
-
-# Momentum Indicators Features Schema
-MOMENTUM_INDICATORS_SCHEMA = DataSchema(
-    name="momentum_indicators",
-    version="1.0.0",
-    description="Momentum and trend indicators",
-    columns=[
-        ColumnSchema(
-            name="timestamp",
-            data_type="timestamp[ns]",
-            nullable=False,
-            description="Feature timestamp (UTC)"
-        ),
-        ColumnSchema(
-            name="rsi",
-            data_type="double",
-            nullable=True,
-            description="Relative Strength Index (14-period)"
-        ),
-        ColumnSchema(
-            name="macd",
-            data_type="double",
-            nullable=True,
-            description="MACD line (12-26 EMA)"
-        ),
-        ColumnSchema(
-            name="macd_signal",
-            data_type="double",
-            nullable=True,
-            description="MACD signal line (9-period EMA)"
-        ),
-        ColumnSchema(
-            name="momentum",
-            data_type="double",
-            nullable=True,
-            description="Price momentum (10-period)"
-        ),
-    ],
-    metadata={
-        "category": "momentum",
-        "rsi_period": "14",
-        "macd_fast": "12",
-        "macd_slow": "26",
-    }
-)
-
-# Volume Profile Features Schema
-VOLUME_PROFILE_SCHEMA = DataSchema(
-    name="volume_profile",
-    version="1.0.0",
-    description="Volume profile and distribution metrics",
-    columns=[
-        ColumnSchema(
-            name="timestamp",
-            data_type="timestamp[ns]",
-            nullable=False,
-            description="Feature timestamp (UTC)"
-        ),
-        ColumnSchema(
-            name="volume_profile_high",
-            data_type="double",
-            nullable=True,
-            description="Price level with highest volume"
-        ),
-        ColumnSchema(
-            name="volume_at_price_high",
-            data_type="int64",
-            nullable=True,
-            description="Volume at highest price level"
-        ),
-        ColumnSchema(
-            name="volume_concentration",
-            data_type="double",
-            nullable=True,
-            description="Percentage of volume in top 5 price levels"
-        ),
-    ],
-    metadata={
-        "category": "volume",
-        "granularity": "daily",
-    }
-)
-
-# Registry of all available schemas
-SCHEMA_REGISTRY = {
-    "ohlcv": OHLCV_SCHEMA,
-    "price_volatility": PRICE_VOLATILITY_SCHEMA,
-    "momentum_indicators": MOMENTUM_INDICATORS_SCHEMA,
-    "volume_profile": VOLUME_PROFILE_SCHEMA,
-}
-
-
-def get_schema(schema_name: str) -> DataSchema:
-    """
-    Retrieve a schema from the registry.
+    def schema_to_dict(self, schema: pa.Schema) -> Dict[str, str]:
+        """
+        Convert PyArrow schema to dictionary representation.
+        
+        Args:
+            schema: PyArrow schema object
+            
+        Returns:
+            Dictionary mapping column names to data types
+        """
+        return {field.name: str(field.type) for field in schema}
     
-    Args:
-        schema_name: Name of the schema (e.g., 'ohlcv', 'price_volatility')
-    
-    Returns:
-        DataSchema object
-    
-    Raises:
-        KeyError: If schema_name is not found in registry
-    """
-    if schema_name not in SCHEMA_REGISTRY:
-        available = ", ".join(SCHEMA_REGISTRY.keys())
-        raise KeyError(f"Schema '{schema_name}' not found. Available: {available}")
-    return SCHEMA_REGISTRY[schema_name]
+    def validate_data_against_schema(
+        self,
+        data_schema: pa.Schema,
+        target_schema: pa.Schema,
+        strict: bool = False
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Validate if data schema matches target schema.
+        
+        Args:
+            data_schema: Schema of the data being validated
+            target_schema: Expected schema
+            strict: If True, exact match required; if False, allow additional columns
+            
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        target_names = {field.name for field in target_schema}
+        data_names = {field.name for field in data_schema}
+        
+        # Check for missing required columns
+        missing = target_names - data_names
+        if missing:
+            return False, f"Missing required columns: {sorted(missing)}"
+        
+        # Check for extra columns in strict mode
+        if strict:
+            extra = data_names - target_names
+            if extra:
+                return False, f"Extra columns not in schema: {sorted(extra)}"
+        
+        # Check column types
+        target_types = {field.name: field.type for field in target_schema}
+        data_types = {field.name: field.type for field in data_schema}
+        
+        type_mismatches = []
+        for col_name in target_names:
+            if col_name in data_types:
+                if data_types[col_name] != target_types[col_name]:
+                    type_mismatches.append(
+                        f"{col_name}: expected {target_types[col_name]}, "
+                        f"got {data_types[col_name]}"
+                    )
+        
+        if type_mismatches:
+            return False, "Type mismatches:\n  " + "\n  ".join(type_mismatches)
+        
+        return True, None
 
 
-def register_schema(schema: DataSchema) -> None:
-    """
-    Register a new schema in the registry.
-    
-    Args:
-        schema: DataSchema object to register
-    """
-    SCHEMA_REGISTRY[schema.name] = schema
+# Global schema registry instance
+_default_registry = SchemaRegistry()
+
+
+def get_schema(name: str) -> pa.Schema:
+    """Get a schema from the default registry."""
+    return _default_registry.get(name)
+
+
+def register_schema(name: str, schema: pa.Schema) -> None:
+    """Register a schema in the default registry."""
+    _default_registry.register(name, schema)
+
+
+def list_schemas() -> List[str]:
+    """List all registered schemas."""
+    return _default_registry.list_schemas()

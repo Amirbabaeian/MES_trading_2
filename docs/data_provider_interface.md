@@ -1,711 +1,720 @@
-# Data Provider Interface Documentation
+# Data Provider Interface Specification
 
 ## Overview
 
-The Data Provider Interface is a vendor-agnostic abstraction for fetching market data (OHLCV candlesticks) from any data source. It enables:
+The Data Provider interface defines a vendor-agnostic contract for retrieving OHLCV (Open, High, Low, Close, Volume) market data from different sources. This abstraction enables:
 
-- **Vendor independence**: Swap data providers without downstream code changes
-- **Standardized schema**: All providers return identical DataFrame structure
-- **Error handling**: Consistent exception hierarchy for provider errors
-- **Testing**: Mock provider for development without real APIs
-- **Extensibility**: Easy to implement custom providers
+- **Vendor independence**: Swap data sources without modifying downstream code
+- **Consistent schema**: All providers return data in the same standardized format
+- **Clear error handling**: Well-defined exception hierarchy for error conditions
+- **Extensibility**: Optional methods for vendor-specific functionality
 
-## Architecture
+## Design Principles
 
-```
-┌─────────────────────────────────────────────┐
-│        Downstream Code (Features,           │
-│        Training, Analysis)                  │
-└──────────────────┬──────────────────────────┘
-                   │ uses interface
-                   ▼
-        ┌──────────────────────┐
-        │  DataProvider (ABC)  │  Abstract base class
-        │  - authenticate()    │  Defines contract
-        │  - fetch_ohlcv()     │
-        │  - get_available_... │
-        └──────────────────────┘
-              ▲         ▲        ▲         ▲
-              │         │        │         │
-    ┌─────────┴──┐  ┌───┴────┐ ┌─┴──────┐ └──────────┐
-    │             │  │        │  │        │            │
- [AlphaVantage] [IB] [Polygon] [Yahoo] [Crypto]   [MockProvider]
- concrete impl  concrete    concrete  concrete    for testing
-```
+### 1. Vendor Agnosticism
+The base class (`DataProvider`) contains no vendor-specific details. All concrete implementations are adapters that translate vendor-specific APIs into the standardized interface.
 
-## DataProvider Interface
+### 2. Standardized Schema
+All OHLCV data is returned as a pandas DataFrame with:
+- **Columns**: `timestamp` (index), `open`, `high`, `low`, `close`, `volume`
+- **Data types**:
+  - `timestamp`: `datetime64[ns, UTC]` (DatetimeIndex)
+  - `open`, `high`, `low`, `close`: `float64`
+  - `volume`: `int64`
+- **Index**: `DatetimeIndex` with name `'timestamp'`, timezone-aware (UTC)
+- **Ordering**: Chronological (oldest to newest)
+- **Gaps**: None; data is continuous within trading hours
 
-### Abstract Base Class
+### 3. Timezone Contract
+**All providers return UTC timestamps.** Timezone conversion to trading hours (e.g., US/Eastern) happens in the data cleaning layer, not in the provider.
 
-```python
-from src.data_ingestion import DataProvider
-from datetime import datetime
-import pandas as pd
+This design:
+- Eliminates timezone ambiguity at the source
+- Centralizes timezone handling (single location for changes)
+- Simplifies testing (UTC is unambiguous)
+- Matches industry standards (databases typically use UTC)
 
-class MyCustomProvider(DataProvider):
-    """Implement your data provider here."""
-    
-    def authenticate(self) -> None:
-        """Establish connection/session."""
-        pass
-    
-    def fetch_ohlcv(
-        self,
-        symbol: str,
-        start_date: datetime,
-        end_date: datetime,
-        timeframe: str = "1D"
-    ) -> pd.DataFrame:
-        """Fetch OHLCV data."""
-        pass
-    
-    def get_available_symbols(self) -> list[str]:
-        """Return list of supported symbols."""
-        pass
-```
-
-### Required Methods
-
-#### 1. `authenticate() -> None`
-
-**Purpose**: Establish connection and validate credentials.
-
-**Behavior**:
-- Validates API credentials/configuration
-- Establishes network connection if needed
-- Initializes session objects
-- Sets `_authenticated = True` on success
-
-**Raises**:
-- `AuthenticationError`: Invalid credentials
-- `ConnectionError`: Cannot reach provider
-
-**Example**:
-```python
-provider = AlphaVantageProvider(api_key='YOUR_KEY')
-provider.authenticate()  # Validates key, connects
-assert provider.is_authenticated
-```
+### 4. Error Clarity
+Errors are categorized by type, enabling appropriate error handling in consumers:
+- **`AuthenticationError`**: Fix credentials and retry
+- **`DataNotAvailableError`**: Check symbol validity or date range
+- **`RateLimitError`**: Implement backoff and retry
+- **`ValidationError`**: Fix input parameters
+- **`ConnectionError`**: Check network connectivity and retry
 
 ---
 
-#### 2. `fetch_ohlcv(symbol, start_date, end_date, timeframe='1D') -> DataFrame`
+## Core Interface
 
-**Purpose**: Core method for retrieving market data.
+### Abstract Base Class: `DataProvider`
 
-**Parameters**:
-- `symbol` (str): Asset identifier
-  - Examples: `"ES"`, `"MES"`, `"VIX"`, `"AAPL"`, `"BTC/USD"`
-  
-- `start_date` (datetime): Inclusive range start
-  - Must be timezone-aware or assumed UTC
-  - Example: `datetime(2024, 1, 1, tzinfo=pytz.UTC)`
-  
-- `end_date` (datetime): Inclusive range end
-  - Must be >= start_date
-  
-- `timeframe` (str): Candlestick period
-  - Options: `"1M"`, `"5M"`, `"15M"`, `"30M"`, `"1H"`, `"1D"`, `"1W"`, `"1MO"`
-  - Default: `"1D"` (daily)
+All concrete implementations must inherit from `DataProvider` and implement the following abstract methods.
 
-**Returns**: DataFrame with standardized schema:
+#### Method: `authenticate()`
 
-```
-                        open     high      low    close    volume
-timestamp (UTC)
-2024-01-01 00:00:00  5000.0  5020.0  4995.0  5010.0  1500000
-2024-01-02 00:00:00  5010.0  5030.0  5005.0  5025.0  1700000
-2024-01-03 00:00:00  5025.0  5050.0  5020.0  5040.0  1600000
+Establish a connection and authenticate with the provider.
+
+```python
+def authenticate(self) -> None:
+    """
+    Establish connection and authenticate with the provider.
+    
+    Must be called before fetch_ohlcv() or get_available_symbols().
+    """
 ```
 
-**Schema Details**:
-- **Index**: `DatetimeIndex` with name `'timestamp'`, timezone UTC
-- **Columns**: `['timestamp', 'open', 'high', 'low', 'close', 'volume']`
-- **Data types**:
-  - `open, high, low, close`: `float64`
-  - `volume`: `int64`
-  - `timestamp`: `datetime64[ns, UTC]`
-- **Constraints**:
-  - `high >= max(open, close)`
-  - `low <= min(open, close)`
-  - No NaN/null values in core columns
-  - Sorted ascending by timestamp
-  - No duplicate timestamps
-  - Continuous (no artificial gaps except market closures)
+**Behavior**:
+- Validates credentials (API keys, tokens, etc.)
+- Establishes connection (network socket, HTTP session, etc.)
+- Initializes session state
+- Sets internal flag `_authenticated = True`
 
 **Raises**:
-- `AuthenticationError`: Not authenticated
-- `ValidationError`: Invalid parameters
-- `DataNotAvailableError`: Symbol/timeframe/date range not available
-- `RateLimitError`: Rate limit exceeded
-- `TimeoutError`: Request times out
-- `ConnectionError`: Cannot connect to provider
-
-**Vendor-Specific Quirks** (adapters must handle):
-- **Market closures**: No data on weekends/holidays
-- **Pre/After hours**: Some providers include, others don't
-- **Splits/Dividends**: Stocks may be adjusted; futures/crypto are not
-- **Delisted symbols**: Old tickers may not have recent data
-- **Futures expiration**: Contract rolls on specific dates
-- **Data quality**: Some providers have gaps or late arrivals
+- `AuthenticationError`: Invalid credentials, expired tokens, insufficient permissions
+- `ConfigurationError`: Missing required configuration
+- `ConnectionError`: Network issues
 
 **Example**:
 ```python
-provider = AlphaVantageProvider(api_key='KEY')
+provider = IQFeedProvider(api_key="...", api_secret="...")
+provider.authenticate()  # Validates credentials and connects
+```
+
+#### Method: `fetch_ohlcv(symbol, start_date, end_date, timeframe)`
+
+Retrieve OHLCV bars for a symbol in the specified date range and timeframe.
+
+```python
+def fetch_ohlcv(
+    self,
+    symbol: str,
+    start_date: datetime,
+    end_date: datetime,
+    timeframe: str,
+) -> pd.DataFrame:
+    """
+    Retrieve OHLCV bars for a symbol.
+    
+    Returns data in standardized schema (see below).
+    """
+```
+
+**Parameters**:
+- `symbol` (str): Asset symbol, typically uppercase (e.g., "ES", "MES", "VIX")
+- `start_date` (datetime): Start of range, inclusive
+- `end_date` (datetime): End of range, inclusive
+- `timeframe` (str): Aggregation interval:
+  - Intraday: `"1m"`, `"5m"`, `"15m"`, `"30m"`, `"60m"`
+  - Daily: `"1D"` or `"D"`
+  - Weekly: `"1W"` or `"W"`
+  - Monthly: `"1M"` or `"M"`
+
+**Returns**:
+- `pd.DataFrame` with standardized schema (see below)
+- Empty DataFrame with correct schema if no data available
+
+**Raises**:
+- `DataNotAvailableError`: Symbol unsupported, timeframe unavailable, no data in range
+- `RateLimitError`: API limits exceeded (transient, may retry)
+- `AuthenticationError`: Not authenticated
+- `ValidationError`: Invalid parameters
+- `ConnectionError`: Network issue
+
+**Key behaviors**:
+- **Pagination**: Handled internally. If a vendor limits data per request, the implementation must split requests and combine results transparently.
+- **Timezone**: All returned timestamps are UTC.
+- **Data quality**: No gaps, duplicates, or NaN values.
+
+**Example**:
+```python
+provider = IQFeedProvider(...)
 provider.authenticate()
 
 df = provider.fetch_ohlcv(
-    symbol='MES',
-    start_date=datetime(2024, 1, 1),
-    end_date=datetime(2024, 12, 31),
-    timeframe='1D'
+    symbol="ES",
+    start_date=datetime(2023, 1, 1),
+    end_date=datetime(2023, 1, 31),
+    timeframe="1D"
 )
 
-# Verify schema
-assert isinstance(df.index, pd.DatetimeIndex)
-assert df.index.name == 'timestamp'
-assert df.index.tz.zone == 'UTC'
-assert list(df.columns) == ['open', 'high', 'low', 'close', 'volume']
-assert df.shape[0] > 0  # Has data
-assert df['high'].min() >= df['low'].max() is False  # proper ordering
+print(df)
+#                                open     high      low    close   volume
+# timestamp                                                               
+# 2023-01-01 17:00:00+00:00  3800.0  3850.0  3790.0  3810.0  1000000
+# 2023-01-02 17:00:00+00:00  3810.0  3820.0  3800.0  3815.0  1100000
 ```
 
----
+#### Method: `get_available_symbols()`
 
-#### 3. `get_available_symbols() -> List[str]`
+Retrieve the list of supported symbols.
 
-**Purpose**: Retrieve supported symbols.
-
-**Returns**: List of symbol strings.
-
-**Example Output**:
 ```python
-['ES', 'MES', 'NQ', 'VIX', 'AAPL', 'MSFT', 'GOOGL', ...]
+def get_available_symbols(self) -> List[str]:
+    """
+    Return the list of supported symbols.
+    
+    Format is vendor-specific (uppercase). May be cached.
+    """
 ```
+
+**Returns**:
+- `List[str]`: Supported symbol names in uppercase
 
 **Raises**:
-- `AuthenticationError`: Authentication required but not done
-- `ConnectionError`: Cannot reach provider
-- `TimeoutError`: Request times out
-
-**Implementation Notes**:
-- Symbol format is provider-specific; normalize in adapters
-- Some providers have thousands of symbols; consider caching
-- List may be filtered (e.g., only US equities)
-- Should be called after `authenticate()`
+- `AuthenticationError`: Not authenticated
+- `ConnectionError`: Network issue
+- `RateLimitError`: API limits exceeded
 
 **Example**:
 ```python
-provider = InteractiveBrokersProvider()
+provider = IQFeedProvider(...)
 provider.authenticate()
+
 symbols = provider.get_available_symbols()
-assert 'ES' in symbols
-assert 'AAPL' in symbols
+print(symbols)  # ["ES", "MES", "NQ", "YM", "VIX", ...]
+
+if "ES" in symbols:
+    df = provider.fetch_ohlcv("ES", ...)
 ```
 
----
+### Non-Abstract (Optional) Methods
 
-### Optional Methods
+#### Method: `disconnect()`
 
-#### `handle_pagination(symbol, start_date, end_date, timeframe, page_size=1000) -> List[DataFrame]`
+Close the connection to the provider.
 
-**Purpose**: Handle large data requests with provider limits.
-
-**Behavior**:
-- Breaks large date ranges into chunks
-- Fetches each chunk separately
-- Returns list of DataFrames
-- Default implementation provided (can override)
-
-**Returns**: List of DataFrames, each following standard schema.
-
-**Example**:
 ```python
-provider = AlphaVantageProvider(...)
-provider.authenticate()
-
-# Fetch 10 years of data in pages
-pages = provider.handle_pagination(
-    symbol='ES',
-    start_date=datetime(2015, 1, 1),
-    end_date=datetime(2024, 12, 31),
-    timeframe='1D'
-)
-
-# Combine pages
-df = pd.concat(pages, ignore_index=False).sort_index()
+def disconnect(self) -> None:
+    """
+    Close the connection and clean up resources.
+    
+    Called automatically when used as a context manager.
+    Subclasses may override to clean up (e.g., close WebSockets).
+    """
 ```
 
----
+This is called automatically by the context manager. Implementations may override to clean up resources.
 
-#### `get_contract_details(symbol) -> Dict[str, Any]`
+#### Method: `handle_pagination(request_func, max_records_per_request, total_records, **kwargs)`
 
-**Purpose**: Retrieve metadata about a symbol.
+Helper method for paginating large requests. Useful for vendors that limit records per API call.
 
-**Returns**: Dictionary with possible keys:
-- `name`: Human-readable name
-- `exchange`: Trading exchange
-- `contract_type`: "STOCK", "FUTURE", "OPTION", "INDEX", etc.
-- `underlying`: Underlying asset (for derivatives)
-- `multiplier`: Contract multiplier
-- `min_tick`: Minimum price movement
-- `expiration`: Expiration date
-- `active`: Is contract currently trading
-
-**Example**:
 ```python
-provider = InteractiveBrokersProvider()
-provider.authenticate()
-
-details = provider.get_contract_details('MES')
-print(details)
-# {
-#     'name': 'E-mini S&P 500 Dec 2024',
-#     'exchange': 'CME',
-#     'contract_type': 'FUTURE',
-#     'multiplier': 50,
-#     'min_tick': 0.25,
-#     'expiration': datetime(2024, 12, 20)
-# }
+def handle_pagination(
+    self,
+    request_func,
+    max_records_per_request: int,
+    total_records: Optional[int] = None,
+    **kwargs,
+) -> pd.DataFrame:
+    """
+    Paginate through large result sets.
+    
+    Repeatedly calls request_func with pagination params,
+    combines results into a single DataFrame.
+    """
 ```
 
----
-
-## Exception Hierarchy
-
-```
-DataProviderError (base)
-├── AuthenticationError          # Credentials invalid
-├── DataNotAvailableError        # Symbol/timeframe/date not available
-├── ValidationError              # Invalid parameters
-├── SchemaError                  # Data doesn't match expected schema
-├── ConnectionError              # Cannot connect to provider
-├── RateLimitError               # Rate limit exceeded
-├── PaginationError              # Pagination handling failed
-└── TimeoutError                 # Request times out
-```
-
-### Common Exception Scenarios
-
-**AuthenticationError**:
+**Example usage** (in a vendor adapter):
 ```python
-try:
-    provider = AlphaVantageProvider(api_key='INVALID')
-    provider.authenticate()  # Raises AuthenticationError
-except AuthenticationError as e:
-    print(f"Auth failed: {e}")
-    print(f"Provider: {e.provider}")
-```
-
-**DataNotAvailableError**:
-```python
-try:
-    df = provider.fetch_ohlcv(
-        symbol='INVALID_SYMBOL',
-        start_date=datetime(2024, 1, 1),
-        end_date=datetime(2024, 12, 31)
+def fetch_ohlcv(self, symbol, start_date, end_date, timeframe):
+    def request_page(offset, limit):
+        return self.api.get_bars(
+            symbol=symbol,
+            start=start_date,
+            end=end_date,
+            timeframe=timeframe,
+            offset=offset,
+            limit=limit,
+        )
+    
+    return self.handle_pagination(
+        request_page,
+        max_records_per_request=1000,
     )
-except DataNotAvailableError as e:
-    print(f"Data not available: {e}")
-    print(f"Symbol: {e.symbol}")
 ```
 
-**RateLimitError**:
+#### Method: `validate_ohlcv_data(df)`
+
+Validate that a DataFrame conforms to the standardized schema.
+
 ```python
-try:
-    for symbol in symbols:
-        df = provider.fetch_ohlcv(symbol, start, end)
-except RateLimitError as e:
-    print(f"Rate limit: {e}")
-    if e.retry_after:
-        time.sleep(e.retry_after)
+def validate_ohlcv_data(self, df: pd.DataFrame) -> None:
+    """
+    Validate OHLCV data against schema.
+    
+    Raises ValidationError if invalid.
+    """
+```
+
+**Validation checks**:
+- Correct columns and column order
+- Correct dtypes
+- DatetimeIndex with UTC timezone
+- No negative volumes
+- High >= Low, etc.
+
+#### Method: `get_contract_details(symbol)` (Optional)
+
+Retrieve vendor-specific contract metadata (optional).
+
+```python
+def get_contract_details(self, symbol: str) -> Dict[str, Any]:
+    """
+    Return contract details (optional).
+    
+    Raises NotImplementedError if not supported.
+    """
+```
+
+**Returns** (example):
+```python
+{
+    "multiplier": 50,
+    "tick_size": 0.25,
+    "currency": "USD",
+    "exchange": "GLOBEX",
+    "description": "E-mini S&P 500 Futures"
+}
+```
+
+---
+
+## Standardized OHLCV Schema
+
+All providers must return data in this exact format:
+
+### DataFrame Structure
+
+```python
+# Example: ES daily data
+               open     high      low    close   volume
+timestamp                                               
+2023-01-01  3800.0  3850.0  3790.0  3810.0  1000000
+2023-01-02  3810.0  3820.0  3800.0  3815.0  1100000
+```
+
+### Columns
+
+| Column    | Data Type | Description |
+|-----------|-----------|-------------|
+| timestamp | (index)   | UTC timestamp as DatetimeIndex |
+| open      | float64   | Opening price |
+| high      | float64   | Highest price in bar |
+| low       | float64   | Lowest price in bar |
+| close     | float64   | Closing price |
+| volume    | int64     | Number of shares/contracts traded |
+
+### Data Types (Python/NumPy)
+
+```python
+df.dtypes
+# open             float64
+# high             float64
+# low              float64
+# close            float64
+# volume            int64
+# dtype: object
+
+df.index
+# DatetimeIndex(['2023-01-01', '2023-01-02', ...], dtype='datetime64[ns, UTC]', name='timestamp', freq=None)
+```
+
+### Verification Code
+
+```python
+def is_valid_ohlcv(df: pd.DataFrame) -> bool:
+    """Check if DataFrame is valid OHLCV."""
+    # Check columns
+    if set(df.columns) != {"open", "high", "low", "close", "volume"}:
+        return False
+    
+    # Check dtypes
+    if df["volume"].dtype != "int64":
+        return False
+    if any(df[col].dtype != "float64" for col in ["open", "high", "low", "close"]):
+        return False
+    
+    # Check index
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return False
+    if df.index.name != "timestamp":
+        return False
+    if df.index.tz is None or str(df.index.tz) != "UTC":
+        return False
+    
+    # Check data validity
+    if (df["volume"] < 0).any():
+        return False
+    if (df["high"] < df["low"]).any():
+        return False
+    
+    return True
 ```
 
 ---
 
 ## Timezone Handling Contract
 
-### Key Principle
-**Providers return UTC. Consumers convert.**
+### Provider Responsibility
+Providers must return **all timestamps in UTC**. This is non-negotiable.
 
-### Details
+### Consumer Responsibility
+Downstream code must convert UTC timestamps to the desired timezone (typically US/Eastern for market hours).
 
-1. **Provider Returns**:
-   - All timestamps in UTC
-   - Example: `2024-01-15 14:30:00+00:00` (2:30 PM UTC)
+### Rationale
+1. **Unambiguous**: UTC has no daylight saving time ambiguity
+2. **Standard**: Matches database and industry conventions
+3. **Centralized**: Single layer (cleaning) handles all timezone conversions
+4. **Testable**: UTC data is easier to test (no clock changes)
 
-2. **Consumer Converts** (in downstream code):
-   - Convert to desired timezone
-   - Example: Convert 14:30 UTC → 9:30 EST (trading open)
-   - Use: `df.index = df.index.tz_convert('America/New_York')`
-
-3. **Why**:
-   - UTC is universal; unambiguous
-   - Providers may serve multiple timezones
-   - Cleaning layer handles timezone conversions
-   - Prevents confusion with daylight saving time
-
-### Example
+### Conversion Example
 
 ```python
-# Provider returns UTC
-df = provider.fetch_ohlcv('ES', start, end)
-print(df.index.tz)  # UTC
+# Provider returns UTC timestamps
+df = provider.fetch_ohlcv("ES", ...)
+# df.index.tz == "UTC"
 
-# Consumer converts
+# Consumer converts to market timezone
 df_ny = df.copy()
-df_ny.index = df_ny.index.tz_convert('America/New_York')
-print(df_ny.index.tz)  # America/New_York
+df_ny.index = df_ny.index.tz_convert("US/Eastern")
+
+# Use df_ny for market hour calculations
 ```
 
 ---
 
-## Usage Patterns
+## Error Handling
 
-### Basic Usage
+### Exception Hierarchy
 
-```python
-from src.data_ingestion import DataProvider
-from src.data_ingestion.adapters import AlphaVantageProvider
-from datetime import datetime
-
-# Initialize
-provider = AlphaVantageProvider(api_key='YOUR_KEY')
-
-# Authenticate
-provider.authenticate()
-
-# Fetch data
-df = provider.fetch_ohlcv(
-    symbol='MES',
-    start_date=datetime(2024, 1, 1),
-    end_date=datetime(2024, 12, 31),
-    timeframe='1D'
-)
-
-# Use data
-print(df.head())
-print(df.shape)
+```
+DataProviderError (base)
+├── AuthenticationError
+├── DataNotAvailableError
+├── RateLimitError
+├── PaginationError
+├── ConfigurationError
+├── ValidationError
+└── ConnectionError
 ```
 
-### Provider Swapping
+### Error Handling Patterns
+
+#### Transient Errors (Retry)
+
+These errors may be temporary; retry with backoff:
+- `RateLimitError`: API rate limits exceeded
+- `ConnectionError`: Network issues
 
 ```python
-# Swap providers without changing client code
-def get_data(provider: DataProvider, symbol: str):
-    """Works with any DataProvider implementation."""
-    provider.authenticate()
+import time
+
+max_retries = 3
+for attempt in range(max_retries):
+    try:
+        df = provider.fetch_ohlcv(...)
+        break
+    except (RateLimitError, ConnectionError) as e:
+        if attempt == max_retries - 1:
+            raise
+        wait_time = 2 ** attempt  # Exponential backoff
+        time.sleep(wait_time)
+```
+
+#### Non-Transient Errors (Fix and Retry)
+
+These require human intervention:
+- `AuthenticationError`: Fix credentials
+- `DataNotAvailableError`: Check symbol or date range
+- `ValidationError`: Fix input parameters
+
+```python
+try:
+    df = provider.fetch_ohlcv(symbol="ES", ...)
+except DataNotAvailableError as e:
+    print(f"Error: {e}")
+    print(f"Available symbols: {provider.get_available_symbols()}")
+except ValidationError as e:
+    print(f"Invalid input: {e}")
+    # Fix parameters and retry manually
+```
+
+---
+
+## Usage Examples
+
+### Basic Usage (Context Manager)
+
+```python
+from datetime import datetime
+from src.data_ingestion.mock_provider import MockDataProvider
+
+# Automatically authenticates on enter, disconnects on exit
+with MockDataProvider(seed=42) as provider:
     df = provider.fetch_ohlcv(
-        symbol=symbol,
-        start_date=datetime(2024, 1, 1),
-        end_date=datetime(2024, 12, 31)
+        symbol="ES",
+        start_date=datetime(2023, 1, 1),
+        end_date=datetime(2023, 1, 31),
+        timeframe="1D"
     )
-    return df
+    print(df.head())
+```
 
-# Use different providers
-alpha_provider = AlphaVantageProvider(api_key='KEY1')
-data1 = get_data(alpha_provider, 'AAPL')
+### Manual Authentication/Disconnection
 
-polygon_provider = PolygonProvider(api_key='KEY2')
-data2 = get_data(polygon_provider, 'AAPL')
+```python
+provider = MockDataProvider(seed=42)
+provider.authenticate()
 
-# Same code, different sources!
+try:
+    symbols = provider.get_available_symbols()
+    df = provider.fetch_ohlcv("ES", datetime(2023, 1, 1), datetime(2023, 1, 31), "1D")
+finally:
+    provider.disconnect()
+```
+
+### Fetching Multiple Symbols
+
+```python
+with MockDataProvider() as provider:
+    symbols = ["ES", "NQ", "VIX"]
+    data = {}
+    
+    for symbol in symbols:
+        data[symbol] = provider.fetch_ohlcv(
+            symbol=symbol,
+            start_date=datetime(2023, 1, 1),
+            end_date=datetime(2023, 1, 31),
+            timeframe="1D"
+        )
+    
+    print(data["ES"].head())
 ```
 
 ### Error Handling
 
 ```python
-from src.data_ingestion import (
-    DataProvider,
-    AuthenticationError,
-    DataNotAvailableError,
-    RateLimitError
-)
-
-try:
-    provider = SomeProvider()
-    provider.authenticate()
-    df = provider.fetch_ohlcv('INVALID', datetime.now(), datetime.now())
-except AuthenticationError:
-    print("Auth failed")
-except DataNotAvailableError as e:
-    print(f"No data for {e.symbol}")
-except RateLimitError as e:
-    if e.retry_after:
-        print(f"Wait {e.retry_after} seconds")
-```
-
-### Pagination for Large Ranges
-
-```python
-# Automatic pagination
-pages = provider.handle_pagination(
-    symbol='ES',
-    start_date=datetime(2010, 1, 1),
-    end_date=datetime(2024, 12, 31),
-    timeframe='1D'
-)
-
-# Combine results
-df = pd.concat(pages, ignore_index=False).sort_index()
-print(f"Total bars: {len(df)}")
-```
-
-### Testing with MockProvider
-
-```python
-from src.data_ingestion import MockProvider
-
-# Use mock for testing
-provider = MockProvider(seed=42)
-provider.authenticate()
-
-df = provider.fetch_ohlcv(
-    symbol='ES',
-    start_date=datetime(2024, 1, 1),
-    end_date=datetime(2024, 12, 31),
-    timeframe='1D'
-)
-
-# Reproducible data (same seed = same data)
-assert len(df) == 252  # Trading days in 2024
-```
-
----
-
-## Implementing a Custom Provider
-
-### Template
-
-```python
-from src.data_ingestion import DataProvider
 from src.data_ingestion.exceptions import (
     AuthenticationError,
     DataNotAvailableError,
     ValidationError
 )
+
+provider = MockDataProvider()
+
+try:
+    provider.authenticate()
+    df = provider.fetch_ohlcv("INVALID", datetime(2023, 1, 1), datetime(2023, 1, 31), "1D")
+except AuthenticationError as e:
+    print(f"Auth failed: {e}")
+except DataNotAvailableError as e:
+    print(f"Symbol not found. Available: {provider.get_available_symbols()}")
+except ValidationError as e:
+    print(f"Invalid input: {e}")
+```
+
+---
+
+## Implementing a New Adapter
+
+To implement a new data provider adapter, follow this template:
+
+```python
 from datetime import datetime
+from typing import List
 import pandas as pd
+from src.data_ingestion.base_provider import DataProvider
+from src.data_ingestion.exceptions import (
+    AuthenticationError,
+    DataNotAvailableError,
+)
 
 class MyDataProvider(DataProvider):
-    """Custom provider implementation."""
+    """
+    Concrete implementation for MyData vendor.
     
-    def __init__(self, api_key: str):
-        super().__init__(name="MyProvider")
+    Adapts vendor-specific API to DataProvider interface.
+    """
+    
+    def __init__(self, api_key: str, api_secret: str):
+        super().__init__()
         self.api_key = api_key
-        self.session = None  # Your connection object
+        self.api_secret = api_secret
+        self.session = None  # Initialize vendor-specific client
     
     def authenticate(self) -> None:
-        """Validate credentials and establish connection."""
+        """Connect and authenticate with vendor API."""
+        # Vendor-specific authentication logic
         if not self.api_key:
             raise AuthenticationError("API key required")
         
-        # Validate key with provider
-        try:
-            # Your validation logic here
-            self.session = self._create_session()
-            self._authenticated = True
-        except Exception as e:
-            raise AuthenticationError(str(e), provider=self.name)
+        # Create session, validate credentials, etc.
+        self.session = MyVendorClient(self.api_key, self.api_secret)
+        self._authenticated = True
     
     def fetch_ohlcv(
         self,
         symbol: str,
         start_date: datetime,
         end_date: datetime,
-        timeframe: str = "1D"
+        timeframe: str,
     ) -> pd.DataFrame:
-        """Fetch OHLCV data."""
+        """Fetch and normalize vendor data."""
         if not self._authenticated:
-            raise AuthenticationError("Must call authenticate() first")
+            raise AuthenticationError("Not authenticated")
         
-        # Validate inputs
-        if start_date > end_date:
-            raise ValidationError("start_date must be <= end_date")
+        # Call vendor API
+        vendor_data = self.session.get_bars(
+            symbol=symbol,
+            start=start_date,
+            end=end_date,
+            interval=self._normalize_timeframe(timeframe),
+        )
         
-        # Fetch from provider
-        try:
-            data = self._fetch_from_api(symbol, start_date, end_date, timeframe)
-        except KeyError:
-            raise DataNotAvailableError(
-                f"Symbol {symbol} not available",
-                symbol=symbol
-            )
+        # Transform to standardized schema
+        df = self._normalize_dataframe(vendor_data)
         
-        # Convert to standard schema
-        df = self._normalize_schema(data)
+        # Validate before returning
+        self.validate_ohlcv_data(df)
         
         return df
     
-    def get_available_symbols(self) -> list:
-        """Return supported symbols."""
-        return self._load_symbol_list()
+    def get_available_symbols(self) -> List[str]:
+        """Fetch list of supported symbols."""
+        if not self._authenticated:
+            raise AuthenticationError("Not authenticated")
+        
+        symbols = self.session.list_symbols()
+        return sorted(symbols)
     
-    # Private methods
-    def _create_session(self):
-        """Create provider session."""
-        pass
+    def _normalize_timeframe(self, timeframe: str) -> str:
+        """Convert standard timeframe to vendor format."""
+        mapping = {
+            "1m": "minute",
+            "1D": "daily",
+            # ... etc
+        }
+        return mapping.get(timeframe, timeframe)
     
-    def _fetch_from_api(self, symbol, start, end, timeframe):
-        """Fetch raw data from provider API."""
-        pass
-    
-    def _normalize_schema(self, data):
-        """Convert to standard schema."""
-        df = pd.DataFrame(data)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
-        df = df.set_index('timestamp')
-        return df[['open', 'high', 'low', 'close', 'volume']]
+    def _normalize_dataframe(self, vendor_data) -> pd.DataFrame:
+        """Convert vendor DataFrame to standardized schema."""
+        df = pd.DataFrame(vendor_data)
+        
+        # Rename columns to standard names
+        df.rename(columns={
+            "open_price": "open",
+            "high_price": "high",
+            # ... etc
+        }, inplace=True)
+        
+        # Ensure timestamp is DatetimeIndex with UTC
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df = df.set_index("timestamp")
+        df.index = df.index.tz_localize("UTC")
+        
+        # Ensure dtypes
+        df["volume"] = df["volume"].astype("int64")
+        for col in ["open", "high", "low", "close"]:
+            df[col] = df[col].astype("float64")
+        
+        return df[["open", "high", "low", "close", "volume"]]
 ```
 
 ---
 
-## Testing Considerations
+## Thread Safety
 
-### Unit Testing with MockProvider
+Implementations should document thread-safety guarantees:
+
+- **`authenticate()`**: Should be thread-safe. May establish a connection pool.
+- **`fetch_ohlcv()`**: May not be thread-safe for the same symbol. Different symbols may be safe.
+- **Connection pooling**: Recommended for high-concurrency use cases.
+
+Example (thread-safe implementation):
 
 ```python
+import threading
+
+class ThreadSafeDataProvider(DataProvider):
+    """Vendor adapter with thread-safe data fetching."""
+    
+    def __init__(self, max_workers=5):
+        super().__init__()
+        self.pool = ThreadPoolExecutor(max_workers=max_workers)
+        self.lock = threading.Lock()
+    
+    def fetch_ohlcv(self, symbol, start_date, end_date, timeframe):
+        # Thread-safe fetch for different symbols
+        return self.pool.submit(
+            self._fetch_impl,
+            symbol,
+            start_date,
+            end_date,
+            timeframe
+        ).result()
+    
+    def _fetch_impl(self, symbol, start_date, end_date, timeframe):
+        # Actual implementation
+        pass
+```
+
+---
+
+## Testing
+
+Use `MockDataProvider` for testing downstream code:
+
+```python
+from src.data_ingestion.mock_provider import MockDataProvider
 import pytest
-from src.data_ingestion import MockProvider, DataProvider
 
-def test_fetch_ohlcv_schema():
-    """Test that returned data has correct schema."""
-    provider = MockProvider()
-    provider.authenticate()
-    
-    df = provider.fetch_ohlcv(
-        symbol='ES',
-        start_date=datetime(2024, 1, 1),
-        end_date=datetime(2024, 12, 31),
-        timeframe='1D'
-    )
-    
-    # Verify schema
-    assert list(df.columns) == ['open', 'high', 'low', 'close', 'volume']
-    assert df.index.name == 'timestamp'
-    assert df.index.tz.zone == 'UTC'
-    
-    # Verify data integrity
-    assert (df['high'] >= df['low']).all()
-    assert (df['high'] >= df['open']).all()
-    assert (df['high'] >= df['close']).all()
-    assert df.index.is_monotonic_increasing
-```
+@pytest.fixture
+def data_provider():
+    return MockDataProvider(seed=42)
 
-### Integration Testing with Real Provider
-
-```python
-@pytest.mark.integration
-def test_alphavantage_provider():
-    """Test real provider (requires API key)."""
-    provider = AlphaVantageProvider(api_key=os.getenv('ALPHA_KEY'))
-    provider.authenticate()
+def test_data_processing(data_provider):
+    data_provider.authenticate()
+    df = data_provider.fetch_ohlcv("ES", datetime(2023, 1, 1), datetime(2023, 1, 31), "1D")
     
-    df = provider.fetch_ohlcv('AAPL', datetime(2024, 1, 1), datetime(2024, 1, 31))
-    
+    # Test processing logic
     assert len(df) > 0
-    assert not df.isnull().any().any()
-```
-
-### Error Testing with FailingMockProvider
-
-```python
-from src.data_ingestion import FailingMockProvider, AuthenticationError
-
-def test_error_handling():
-    """Test error handling."""
-    provider = FailingMockProvider(failure_mode='auth')
-    
-    with pytest.raises(AuthenticationError):
-        provider.authenticate()
-```
-
----
-
-## Best Practices
-
-### 1. Always Call authenticate() First
-```python
-provider = AlphaVantageProvider(api_key='KEY')
-provider.authenticate()  # Required!
-df = provider.fetch_ohlcv(...)
-```
-
-### 2. Check Symbol Availability
-```python
-provider.authenticate()
-available = provider.get_available_symbols()
-if symbol not in available:
-    print(f"Symbol {symbol} not available")
-```
-
-### 3. Handle Pagination
-```python
-# For large date ranges
-if (end_date - start_date).days > 365:
-    pages = provider.handle_pagination(...)
-    df = pd.concat(pages).sort_index()
-```
-
-### 4. Catch Provider-Specific Errors
-```python
-try:
-    df = provider.fetch_ohlcv(...)
-except (AuthenticationError, DataNotAvailableError) as e:
-    log.error(f"Provider error: {e}")
-    raise
-```
-
-### 5. Use Context Managers (if implementing)
-```python
-# Provider can implement cleanup
-with AlphaVantageProvider(api_key='KEY') as provider:
-    provider.authenticate()
-    df = provider.fetch_ohlcv(...)
-    # Auto-cleanup on exit
-```
-
-### 6. Cache Symbol Lists
-```python
-# Don't call get_available_symbols() repeatedly
-symbols = provider.get_available_symbols()  # Once
-for symbol in symbols:
-    if has_data(symbol):
-        df = provider.fetch_ohlcv(symbol, ...)
+    assert df.index.tz.zone == "UTC"
+    assert set(df.columns) == {"open", "high", "low", "close", "volume"}
 ```
 
 ---
 
 ## FAQ
 
-**Q: Why does every provider return UTC timestamps?**
-A: UTC is universal and unambiguous. Converting to specific timezones happens in the cleaning layer, not at the provider level. This keeps providers simple and prevents timezone confusion.
+**Q: Can providers return data in a different timezone?**
+A: No. All providers must return UTC timestamps. Timezone conversion happens in downstream code.
 
-**Q: Can I implement pagination differently?**
-A: Yes! The default `handle_pagination()` is provided for convenience, but override it for vendor-specific pagination logic.
+**Q: What if a symbol is not supported?**
+A: Raise `DataNotAvailableError` with a clear message. Consumers can check `get_available_symbols()`.
 
-**Q: What if a provider doesn't have all symbols?**
-A: Call `get_available_symbols()` to check. If a symbol isn't available, `fetch_ohlcv()` raises `DataNotAvailableError`.
+**Q: How should pagination be handled?**
+A: Transparently, within `fetch_ohlcv()`. Use `handle_pagination()` helper or implement vendor-specific pagination.
 
-**Q: How do I handle rate limits?**
-A: Catch `RateLimitError`; it includes `retry_after` (seconds to wait). Implement backoff/retry logic in your adapter.
+**Q: Can I return NaN values?**
+A: No. All data must be continuous and valid. Return an empty DataFrame if no data is available.
 
-**Q: Can I fetch intraday data?**
-A: Yes! Use timeframe parameters: "1M", "5M", "15M", "30M", "1H". Provider support varies; document in adapter.
+**Q: Should I cache `get_available_symbols()`?**
+A: Yes. The list is typically static. Refresh on `authenticate()` if necessary.
 
-**Q: What about options and other derivatives?**
-A: The interface is for OHLCV data. Options and derivatives may need specialized providers with different schemas.
+**Q: Are methods thread-safe?**
+A: Document in your implementation. Use locking or connection pools for concurrent access.
 
 ---
 
 ## Summary
 
-The DataProvider interface is:
-- ✅ **Vendor-agnostic**: No vendor details in base class
-- ✅ **Standardized**: All providers return identical schema
-- ✅ **Well-documented**: Each method has clear contracts
-- ✅ **Extensible**: Easy to implement custom providers
-- ✅ **Testable**: Mock provider for development
-- ✅ **Error-safe**: Comprehensive exception hierarchy
+The `DataProvider` interface enables vendor-independent data retrieval through:
 
-Use it to decouple your code from any single data vendor!
+1. **Consistent schema**: All data in the same format (DataFrame with UTC timestamps)
+2. **Clear contracts**: Well-defined methods with specific behavior
+3. **Error clarity**: Categorized exceptions for appropriate error handling
+4. **Extensibility**: Optional methods for vendor-specific features
+5. **Testability**: Mock provider for testing without real data
+
+Implement the abstract methods, document vendor-specific quirks, and follow the interface contract.

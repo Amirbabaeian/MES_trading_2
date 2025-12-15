@@ -1,27 +1,53 @@
 """
 Metadata management utilities for Parquet files.
 
-Provides utilities for:
-- Reading/writing metadata JSON files
-- Embedding custom metadata in Parquet files
-- Extracting metadata from existing files
-- Version tracking and lineage information
+Handles embedding, extraction, and validation of custom metadata
+in Parquet file headers.
 """
 
+from typing import Dict, Any, Optional
+from datetime import datetime
 import json
 import logging
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Dict, Any, Optional, List
-import hashlib
 
 logger = logging.getLogger(__name__)
 
 
 class MetadataManager:
-    """Manages metadata for data artifacts."""
+    """
+    Manages metadata embedding and extraction for Parquet files.
     
-    METADATA_VERSION = "1.0.0"
+    Parquet files support custom key-value metadata in the file footer.
+    This manager provides utilities to work with this metadata in a
+    structured way.
+    """
+    
+    # Standard metadata keys
+    CREATION_TIMESTAMP = "creation_timestamp"
+    DATA_RANGE_START = "data_range_start"
+    DATA_RANGE_END = "data_range_end"
+    ROW_COUNT = "row_count"
+    SCHEMA_VERSION = "schema_version"
+    ASSET = "asset"
+    VERSION = "version"
+    CHANGELOG = "changelog"
+    DEPENDENCIES = "dependencies"
+    COMPRESSION = "compression"
+    PARQUET_VERSION = "parquet_version"
+    
+    STANDARD_KEYS = {
+        CREATION_TIMESTAMP,
+        DATA_RANGE_START,
+        DATA_RANGE_END,
+        ROW_COUNT,
+        SCHEMA_VERSION,
+        ASSET,
+        VERSION,
+        CHANGELOG,
+        DEPENDENCIES,
+        COMPRESSION,
+        PARQUET_VERSION,
+    }
     
     def __init__(self):
         """Initialize metadata manager."""
@@ -29,295 +55,215 @@ class MetadataManager:
     
     @staticmethod
     def create_metadata(
-        layer: str,
-        asset: str,
-        record_count: int,
-        file_size_bytes: int,
-        timestamp_range: Optional[tuple] = None,
-        custom_metadata: Optional[Dict[str, str]] = None,
-        version_info: Optional[Dict[str, int]] = None,
-        dependencies: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Create a metadata dictionary for a data artifact.
-        
-        Args:
-            layer: Data layer ('raw', 'cleaned', 'features')
-            asset: Asset identifier (e.g., 'MES', 'ES', 'VIX')
-            record_count: Number of records in the artifact
-            file_size_bytes: Total size in bytes
-            timestamp_range: Tuple of (start_timestamp, end_timestamp) as ISO strings
-            custom_metadata: Custom key-value pairs
-            version_info: Version information {'major_version': int, 'previous_version': int}
-            dependencies: Dependencies information
-        
-        Returns:
-            Dictionary with metadata content
-        """
-        metadata = {
-            "metadata_version": MetadataManager.METADATA_VERSION,
-            "creation_timestamp": datetime.now(timezone.utc).isoformat(),
-            "layer": layer,
-            "asset": asset,
-        }
-        
-        if version_info:
-            metadata["version_info"] = version_info
-        
-        if timestamp_range:
-            metadata["data_range"] = {
-                "start_timestamp": timestamp_range[0],
-                "end_timestamp": timestamp_range[1],
-            }
-        
-        metadata["record_count"] = record_count
-        
-        metadata["file_info"] = {
-            "total_size_bytes": file_size_bytes,
-            "total_size_human": MetadataManager._bytes_to_human(file_size_bytes),
-        }
-        
-        if custom_metadata:
-            metadata["custom"] = custom_metadata
-        
-        if dependencies:
-            metadata["dependencies"] = dependencies
-        
-        return metadata
-    
-    @staticmethod
-    def _bytes_to_human(num_bytes: int) -> str:
-        """Convert bytes to human-readable format."""
-        for unit in ["B", "KB", "MB", "GB", "TB"]:
-            if num_bytes < 1024:
-                return f"{num_bytes:.1f} {unit}"
-            num_bytes /= 1024
-        return f"{num_bytes:.1f} PB"
-    
-    @staticmethod
-    def write_metadata_file(
-        metadata: Dict[str, Any],
-        output_path: Path,
-    ) -> None:
-        """
-        Write metadata to a JSON file.
-        
-        Args:
-            metadata: Metadata dictionary
-            output_path: Path to write metadata.json file
-        """
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(output_path, "w") as f:
-            json.dump(metadata, f, indent=2, default=str)
-        
-        logger.info(f"Wrote metadata to {output_path}")
-    
-    @staticmethod
-    def read_metadata_file(metadata_path: Path) -> Dict[str, Any]:
-        """
-        Read metadata from a JSON file.
-        
-        Args:
-            metadata_path: Path to metadata.json file
-        
-        Returns:
-            Metadata dictionary
-        
-        Raises:
-            FileNotFoundError: If metadata file doesn't exist
-            json.JSONDecodeError: If file is not valid JSON
-        """
-        metadata_path = Path(metadata_path)
-        
-        if not metadata_path.exists():
-            raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
-        
-        with open(metadata_path, "r") as f:
-            metadata = json.load(f)
-        
-        logger.info(f"Read metadata from {metadata_path}")
-        return metadata
-    
-    @staticmethod
-    def update_metadata_file(
-        metadata_path: Path,
-        updates: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """
-        Update an existing metadata file with new values.
-        
-        Args:
-            metadata_path: Path to metadata.json file
-            updates: Dictionary of fields to update or add
-        
-        Returns:
-            Updated metadata dictionary
-        """
-        metadata = MetadataManager.read_metadata_file(metadata_path)
-        metadata.update(updates)
-        MetadataManager.write_metadata_file(metadata, metadata_path)
-        return metadata
-    
-    @staticmethod
-    def add_file_info(
-        metadata: Dict[str, Any],
-        filename: str,
-        size_bytes: int,
-        file_format: str = "parquet",
-        md5_checksum: Optional[str] = None,
+        creation_timestamp: Optional[str] = None,
+        data_range_start: Optional[str] = None,
+        data_range_end: Optional[str] = None,
         row_count: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        schema_version: str = "1.0",
+        asset: Optional[str] = None,
+        version: Optional[str] = None,
+        changelog: Optional[str] = None,
+        dependencies: Optional[list] = None,
+        compression: str = "snappy",
+        **custom_metadata
+    ) -> Dict[str, str]:
         """
-        Add file information to metadata.
+        Create a metadata dictionary with standard and custom fields.
         
         Args:
-            metadata: Metadata dictionary
-            filename: Name of the file
-            size_bytes: File size in bytes
-            file_format: File format (parquet, json, csv, arrow)
-            md5_checksum: MD5 checksum of the file
-            row_count: Number of rows (for tabular files)
-        
+            creation_timestamp: ISO format timestamp (auto-generated if not provided)
+            data_range_start: Start of data time range (ISO format)
+            data_range_end: End of data time range (ISO format)
+            row_count: Number of rows in dataset
+            schema_version: Version of the schema used
+            asset: Asset identifier (e.g., "MES", "ES", "VIX")
+            version: Data version (e.g., "v1", "v2.1")
+            changelog: Summary of changes from previous version
+            dependencies: List of data dependencies
+            compression: Compression codec used
+            **custom_metadata: Additional custom key-value pairs
+            
         Returns:
-            Updated metadata dictionary
+            Dictionary of metadata suitable for Parquet metadata
         """
-        if "file_info" not in metadata:
-            metadata["file_info"] = {}
+        metadata = {}
         
-        if "file_list" not in metadata["file_info"]:
-            metadata["file_info"]["file_list"] = []
+        # Set creation timestamp if not provided
+        if creation_timestamp is None:
+            creation_timestamp = datetime.utcnow().isoformat()
         
-        file_entry = {
-            "filename": filename,
-            "size_bytes": size_bytes,
-            "format": file_format,
-        }
-        
-        if md5_checksum:
-            file_entry["md5_checksum"] = md5_checksum
-        
+        # Add standard metadata
+        if creation_timestamp:
+            metadata[MetadataManager.CREATION_TIMESTAMP] = creation_timestamp
+        if data_range_start:
+            metadata[MetadataManager.DATA_RANGE_START] = data_range_start
+        if data_range_end:
+            metadata[MetadataManager.DATA_RANGE_END] = data_range_end
         if row_count is not None:
-            file_entry["row_count"] = row_count
-        
-        metadata["file_info"]["file_list"].append(file_entry)
-        return metadata
-    
-    @staticmethod
-    def compute_file_hash(file_path: Path, algorithm: str = "md5") -> str:
-        """
-        Compute hash of a file.
-        
-        Args:
-            file_path: Path to the file
-            algorithm: Hash algorithm ('md5', 'sha1', 'sha256')
-        
-        Returns:
-            Hex digest of the hash
-        """
-        hash_func = hashlib.new(algorithm)
-        
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                hash_func.update(chunk)
-        
-        return hash_func.hexdigest()
-    
-    @staticmethod
-    def add_schema_info(
-        metadata: Dict[str, Any],
-        schema_version: str,
-        columns: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """
-        Add schema information to metadata.
-        
-        Args:
-            metadata: Metadata dictionary
-            schema_version: Version identifier for the schema
-            columns: List of column definitions
-        
-        Returns:
-            Updated metadata dictionary
-        """
-        metadata["schema_info"] = {
-            "schema_version": schema_version,
-            "columns": columns,
-        }
-        return metadata
-    
-    @staticmethod
-    def add_quality_metrics(
-        metadata: Dict[str, Any],
-        null_counts: Optional[Dict[str, int]] = None,
-        quality_flags: Optional[List[str]] = None,
-        completeness_percentage: Optional[float] = None,
-    ) -> Dict[str, Any]:
-        """
-        Add data quality metrics to metadata.
-        
-        Args:
-            metadata: Metadata dictionary
-            null_counts: Count of null values per column
-            quality_flags: List of quality issues or warnings
-            completeness_percentage: Percentage of non-null values
-        
-        Returns:
-            Updated metadata dictionary
-        """
-        data_quality = {}
-        
-        if null_counts is not None:
-            data_quality["null_counts"] = null_counts
-        
-        if quality_flags is not None:
-            data_quality["quality_flags"] = quality_flags
-        
-        if completeness_percentage is not None:
-            data_quality["completeness_percentage"] = completeness_percentage
-        
-        if data_quality:
-            metadata["data_quality"] = data_quality
-        
-        return metadata
-    
-    @staticmethod
-    def add_dependencies(
-        metadata: Dict[str, Any],
-        raw_sources: Optional[List[Dict[str, Any]]] = None,
-        cleaned_version: Optional[int] = None,
-        processing_script: Optional[str] = None,
-        processing_script_hash: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Add dependency information to metadata.
-        
-        Args:
-            metadata: Metadata dictionary
-            raw_sources: List of raw data sources used
-            cleaned_version: Cleaned data version used
-            processing_script: Script or code version used
-            processing_script_hash: SHA-1 hash of processing script
-        
-        Returns:
-            Updated metadata dictionary
-        """
-        dependencies = {}
-        
-        if raw_sources is not None:
-            dependencies["raw_sources"] = raw_sources
-        
-        if cleaned_version is not None:
-            dependencies["cleaned_version"] = cleaned_version
-        
-        if processing_script is not None:
-            dependencies["processing_script"] = processing_script
-        
-        if processing_script_hash is not None:
-            dependencies["processing_script_hash"] = processing_script_hash
-        
+            metadata[MetadataManager.ROW_COUNT] = str(row_count)
+        if schema_version:
+            metadata[MetadataManager.SCHEMA_VERSION] = schema_version
+        if asset:
+            metadata[MetadataManager.ASSET] = asset
+        if version:
+            metadata[MetadataManager.VERSION] = version
+        if changelog:
+            metadata[MetadataManager.CHANGELOG] = changelog
         if dependencies:
-            metadata["dependencies"] = dependencies
+            metadata[MetadataManager.DEPENDENCIES] = json.dumps(dependencies)
+        if compression:
+            metadata[MetadataManager.COMPRESSION] = compression
+        
+        # Add custom metadata (convert non-string values to JSON)
+        for key, value in custom_metadata.items():
+            if isinstance(value, str):
+                metadata[key] = value
+            else:
+                # Convert complex types to JSON strings
+                try:
+                    metadata[key] = json.dumps(value)
+                except (TypeError, ValueError):
+                    metadata[key] = str(value)
+                    logger.warning(
+                        f"Custom metadata '{key}' could not be JSON serialized, "
+                        f"using string representation"
+                    )
         
         return metadata
+    
+    @staticmethod
+    def extract_metadata(parquet_metadata: Dict[bytes, bytes]) -> Dict[str, Any]:
+        """
+        Extract and parse metadata from Parquet file metadata.
+        
+        Args:
+            parquet_metadata: Raw metadata dict from Parquet file
+            (as returned by parquet_file.schema_arrow.metadata)
+            
+        Returns:
+            Dictionary with decoded metadata
+        """
+        if not parquet_metadata:
+            return {}
+        
+        decoded = {}
+        for key, value in parquet_metadata.items():
+            # Keys and values are bytes, decode them
+            try:
+                k = key.decode("utf-8") if isinstance(key, bytes) else key
+                v = value.decode("utf-8") if isinstance(value, bytes) else value
+                
+                # Try to parse JSON values
+                if k in {MetadataManager.DEPENDENCIES, MetadataManager.CHANGELOG}:
+                    try:
+                        decoded[k] = json.loads(v)
+                    except json.JSONDecodeError:
+                        decoded[k] = v
+                else:
+                    decoded[k] = v
+            except (UnicodeDecodeError, AttributeError) as e:
+                logger.warning(f"Failed to decode metadata key/value: {e}")
+                decoded[str(key)] = str(value)
+        
+        return decoded
+    
+    @staticmethod
+    def validate_metadata(
+        metadata: Dict[str, Any],
+        required_keys: Optional[list] = None
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Validate metadata dictionary.
+        
+        Args:
+            metadata: Metadata dictionary to validate
+            required_keys: List of required metadata keys
+            
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        if not isinstance(metadata, dict):
+            return False, "Metadata must be a dictionary"
+        
+        if required_keys:
+            missing = set(required_keys) - set(metadata.keys())
+            if missing:
+                return False, f"Missing required metadata keys: {sorted(missing)}"
+        
+        # Validate specific fields if present
+        if MetadataManager.CREATION_TIMESTAMP in metadata:
+            try:
+                # Try to parse as ISO format
+                datetime.fromisoformat(
+                    metadata[MetadataManager.CREATION_TIMESTAMP].replace("Z", "+00:00")
+                )
+            except (ValueError, AttributeError):
+                return False, (
+                    f"Invalid {MetadataManager.CREATION_TIMESTAMP} format. "
+                    f"Expected ISO format string"
+                )
+        
+        if MetadataManager.ROW_COUNT in metadata:
+            try:
+                int(metadata[MetadataManager.ROW_COUNT])
+            except (ValueError, TypeError):
+                return False, (
+                    f"Invalid {MetadataManager.ROW_COUNT}. Expected integer value"
+                )
+        
+        return True, None
+    
+    @staticmethod
+    def merge_metadata(
+        base_metadata: Dict[str, str],
+        updates: Dict[str, str],
+        preserve_creation_timestamp: bool = True
+    ) -> Dict[str, str]:
+        """
+        Merge updated metadata with base metadata.
+        
+        Args:
+            base_metadata: Original metadata dictionary
+            updates: Updated/new metadata key-value pairs
+            preserve_creation_timestamp: Keep original creation timestamp
+            
+        Returns:
+            Merged metadata dictionary
+        """
+        merged = base_metadata.copy()
+        
+        # Preserve creation timestamp if requested and it exists
+        if preserve_creation_timestamp:
+            original_timestamp = merged.get(MetadataManager.CREATION_TIMESTAMP)
+        
+        merged.update(updates)
+        
+        if preserve_creation_timestamp and original_timestamp:
+            merged[MetadataManager.CREATION_TIMESTAMP] = original_timestamp
+        
+        return merged
+    
+    @staticmethod
+    def format_metadata_for_display(metadata: Dict[str, Any]) -> str:
+        """
+        Format metadata dictionary as human-readable string.
+        
+        Args:
+            metadata: Metadata dictionary
+            
+        Returns:
+            Formatted string representation
+        """
+        if not metadata:
+            return "No metadata"
+        
+        lines = []
+        for key, value in sorted(metadata.items()):
+            if isinstance(value, (list, dict)):
+                # Format complex types nicely
+                value_str = json.dumps(value, indent=2)
+                lines.append(f"{key}:\n  {value_str}")
+            else:
+                lines.append(f"{key}: {value}")
+        
+        return "\n".join(lines)

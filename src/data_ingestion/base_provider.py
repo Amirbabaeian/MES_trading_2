@@ -1,333 +1,425 @@
 """
 Abstract base class for vendor-agnostic data providers.
 
-This module defines the DataProvider interface that all concrete data provider
-implementations must follow. The interface enables swapping data vendors without
-downstream code changes and ensures consistent data schemas across providers.
+This module defines the DataProvider interface that all concrete implementations
+must follow. The interface abstracts away vendor-specific details and ensures
+consistent data retrieval across different market data sources.
+
+Key Design Principles:
+- Vendor-agnostic: No vendor-specific details in this base class
+- Standardized output: All providers return data in the same schema
+- Timezone contract: Providers return UTC timestamps; consumers convert as needed
+- Extensibility: Support optional methods for extended functionality
+- Error clarity: Well-defined exception hierarchy for error handling
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
+from typing import List, Optional, Dict, Any
+
 import pandas as pd
+
+from src.data_ingestion.exceptions import (
+    AuthenticationError,
+    DataNotAvailableError,
+    PaginationError,
+)
 
 
 class DataProvider(ABC):
     """
-    Abstract base class for data providers.
-    
-    This class defines the interface that all data provider implementations must follow.
-    Providers are responsible for:
-    - Authentication and session management
-    - Fetching OHLCV (Open, High, Low, Close, Volume) data
-    - Managing rate limits and pagination
-    - Returning data in a standardized schema
-    
-    All providers must return data with the following schema:
+    Abstract base class for market data providers.
+
+    All concrete implementations (e.g., IQFeed, Polygon.io, etc.) must
+    inherit from this class and implement all abstract methods.
+
+    Standardized Output Schema
+    --------------------------
+    All OHLCV data must be returned as a pandas DataFrame with:
     - Columns: timestamp, open, high, low, close, volume
-    - Data types: timestamp (datetime64[ns, UTC]), prices (float64), volume (int64)
-    - Index: timestamp as DatetimeIndex (UTC)
-    - No missing values in core OHLCV columns
-    
-    Timezone Handling Contract:
-    - All timestamps returned by providers MUST be in UTC
-    - Consumers may convert to other timezones (e.g., NY time) in downstream layers
-    - Providers should NOT convert to consumer timezones
+    - Index: DatetimeIndex with name 'timestamp'
+    - Dtypes:
+      - timestamp: datetime64[ns, UTC]
+      - open, high, low, close: float64
+      - volume: int64
+    - All timestamps in UTC (conversion to other timezones happens downstream)
+    - Sorted chronologically (oldest to newest)
+    - No gaps or NaN values
+
+    Thread Safety
+    ~~~~~~~~~~~~~~
+    Implementations should document thread-safety guarantees:
+    - authenticate() should be thread-safe
+    - fetch_ohlcv() may not be thread-safe for the same symbol
+    - Consider connection pooling for concurrent requests
     """
-    
-    def __init__(self, name: str = None):
+
+    def __init__(self) -> None:
         """
         Initialize the data provider.
-        
-        Args:
-            name: Human-readable name of the provider (e.g., "AlphaVantage", "IB", "Polygon").
+
+        Subclasses may override to set up configuration, validate parameters, etc.
         """
-        self.name = name or self.__class__.__name__
         self._authenticated = False
-    
-    @property
-    def is_authenticated(self) -> bool:
-        """Check if the provider is currently authenticated."""
-        return self._authenticated
-    
+
+    def __enter__(self):
+        """
+        Context manager entry.
+
+        Automatically authenticates the provider when used with 'with' statement.
+        """
+        self.authenticate()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Context manager exit.
+
+        Subclasses may override to clean up resources.
+        """
+        self.disconnect()
+
     @abstractmethod
     def authenticate(self) -> None:
         """
-        Establish connection/session with the data provider.
-        
-        This method should:
-        - Validate API credentials/configuration
-        - Establish network connection
-        - Initialize any required session objects
-        - Set internal state indicating successful authentication
-        
-        Returns:
-            None
-        
-        Raises:
-            AuthenticationError: If authentication credentials are invalid or missing.
-            ConnectionError: If unable to establish connection to provider.
-        
-        Example:
-            >>> provider = AlphaVantageProvider(api_key='YOUR_KEY')
-            >>> provider.authenticate()  # Validates API key and establishes session
-            >>> print(provider.is_authenticated)
-            True
+        Establish connection and authenticate with the provider.
+
+        This method must be called before calling fetch_ohlcv() or
+        get_available_symbols(). It may establish API connections, validate
+        credentials, or initialize session state.
+
+        Raises
+        ------
+        AuthenticationError
+            If authentication fails due to invalid credentials, expired tokens,
+            network issues, or insufficient permissions.
+        ConfigurationError
+            If required configuration parameters are missing.
+        ConnectionError
+            If the connection cannot be established.
+
+        Examples
+        --------
+        >>> provider = ConcreteDataProvider(api_key="...", api_secret="...")
+        >>> provider.authenticate()
+        >>> # Now safe to call fetch_ohlcv()
         """
         pass
-    
+
+    def disconnect(self) -> None:
+        """
+        Close the connection to the provider.
+
+        This method is called automatically when the provider is used
+        as a context manager. Subclasses may override to clean up
+        resources (e.g., close WebSocket connections, flush buffers).
+
+        This is a non-abstract optional method with a default no-op implementation.
+        """
+        pass
+
     @abstractmethod
     def fetch_ohlcv(
         self,
         symbol: str,
         start_date: datetime,
         end_date: datetime,
-        timeframe: str = "1D"
+        timeframe: str,
     ) -> pd.DataFrame:
         """
-        Fetch OHLCV (candlestick) data for a symbol in a date range.
-        
-        This is the core method for retrieving market data. Implementations must:
-        - Validate input parameters (symbol, dates, timeframe)
-        - Handle pagination automatically for large date ranges
-        - Return data in standardized schema (see class docstring)
-        - Convert all timestamps to UTC
-        - Handle vendor-specific data quirks (gaps, halts, etc.)
-        
-        Parameters:
-            symbol: Asset symbol or ticker.
-                Examples: "MES" (E-mini S&P 500 futures),
-                          "ES" (E-mini S&P 500 futures),
-                          "VIX" (Volatility Index futures),
-                          "AAPL" (Apple stock),
-                          "BTC/USD" (Bitcoin/USD pair)
-            
-            start_date: Start of date range (inclusive).
-                Must be timezone-aware or will be assumed UTC.
-                Example: datetime(2024, 1, 1, tzinfo=pytz.UTC)
-            
-            end_date: End of date range (inclusive).
-                Must be timezone-aware or will be assumed UTC.
-                Must be >= start_date.
-            
-            timeframe: Candlestick period as string.
-                Supported values: "1M" (1 minute), "5M", "15M", "30M", "1H", "1D", "1W", "1MO"
-                Default: "1D" (daily data)
-        
-        Returns:
-            pd.DataFrame: OHLCV data with structure:
-                Columns: ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-                Index: DatetimeIndex with name 'timestamp' (UTC timezone)
-                Shape: (n_bars, 6) where n_bars is number of candlesticks
-                Example:
-                                        open     high      low    close    volume
-                    timestamp
-                    2024-01-01 00:00:00  100.0   101.0    99.0   100.5  1000000
-                    2024-01-02 00:00:00  100.5   102.0    99.5   101.0  1200000
-                    ...
-        
-        Raises:
-            AuthenticationError: If provider requires authentication before fetching data.
-            DataNotAvailableError: If data for symbol/timeframe/date range not available.
-            ValidationError: If input parameters are invalid.
-            RateLimitError: If provider rate limit is exceeded.
-            TimeoutError: If request times out.
-        
-        Notes:
-            - Data is expected to be continuous with no gaps (except market closures).
-            - Duplicate timestamps should not appear in results.
-            - Data should be sorted by timestamp in ascending order.
-            - Volume should be in contracts (for futures) or shares (for stocks).
-            - Prices should be adjusted for splits/dividends if applicable.
-            - Returns empty DataFrame if no data available for date range.
-            - Some vendors may only support certain timeframes; document in adapter.
-        
-        Example:
-            >>> provider = AlphaVantageProvider(api_key='KEY')
-            >>> provider.authenticate()
-            >>> df = provider.fetch_ohlcv(
-            ...     symbol='MES',
-            ...     start_date=datetime(2024, 1, 1),
-            ...     end_date=datetime(2024, 12, 31),
-            ...     timeframe='1D'
-            ... )
-            >>> print(df.head())
-            >>> print(df.shape)
-            (252, 6)  # Approximately 252 trading days in 2024
+        Retrieve OHLCV (Open, High, Low, Close, Volume) bars for a symbol.
+
+        This is the core method for data retrieval. Implementations must handle
+        pagination internally if the date range is large. Return data must conform
+        to the standardized schema documented in the class docstring.
+
+        Parameters
+        ----------
+        symbol : str
+            The asset symbol to fetch data for. Format is vendor-specific but
+            should be uppercase (e.g., "ES", "MES", "VIX", "AAPL").
+            Symbols should be validated against get_available_symbols().
+        start_date : datetime
+            Start of the date range (inclusive). Should be a datetime object.
+            Time-of-day is typically ignored (market open time assumed).
+        end_date : datetime
+            End of the date range (inclusive). Should be after start_date.
+        timeframe : str
+            Aggregation interval for bars. Vendor-agnostic formats:
+            - "1m", "5m", "15m", "30m", "60m" (intraday minutes)
+            - "D" or "1D" (daily)
+            - "W" or "1W" (weekly)
+            - "M" or "1M" (monthly)
+            Other formats may be supported by specific vendors.
+
+        Returns
+        -------
+        pd.DataFrame
+            OHLCV data in standardized schema:
+            - Index: DatetimeIndex named 'timestamp' (UTC)
+            - Columns: ['open', 'high', 'low', 'close', 'volume']
+            - Dtypes: float64 (prices), int64 (volume)
+            - Sorted chronologically (oldest to newest)
+            - No gaps or NaN values
+            - Empty DataFrame with correct schema if no data available
+
+        Raises
+        ------
+        DataNotAvailableError
+            If the symbol is not supported, the timeframe is not available,
+            or the date range contains no trading data.
+        RateLimitError
+            If API rate limits are exceeded (may be retried).
+        AuthenticationError
+            If the session is no longer authenticated.
+        ValidationError
+            If input parameters are invalid (e.g., end_date before start_date).
+        ConnectionError
+            If the connection to the provider is lost.
+
+        Notes
+        -----
+        Pagination: Implementations must handle pagination internally. If a vendor
+        has data limits per request, the implementation should split the date range
+        and combine results transparently.
+
+        Timezone: All returned timestamps are in UTC. Consumers must convert to
+        their desired timezone (e.g., US/Eastern for market hours).
+
+        Data Quality: Providers should validate returned data:
+        - No negative volumes
+        - High >= Low, High >= Close, Open, Low <= Close, Open
+        - No duplicate timestamps
+        - No gaps in trading hours (weekends/holidays are expected)
+
+        Examples
+        --------
+        >>> provider = ConcreteDataProvider(api_key="...")
+        >>> provider.authenticate()
+        >>> df = provider.fetch_ohlcv(
+        ...     symbol="ES",
+        ...     start_date=datetime(2023, 1, 1),
+        ...     end_date=datetime(2023, 1, 31),
+        ...     timeframe="1D"
+        ... )
+        >>> df.head()
+                                open      high       low     close  volume
+        timestamp
+        2023-01-01 17:00:00+00:00  3800.0  3850.0  3790.0  3810.0  1000000
         """
         pass
-    
+
     @abstractmethod
     def get_available_symbols(self) -> List[str]:
         """
-        Retrieve list of symbols supported by this provider.
-        
-        This method returns all symbols that can be fetched from this provider.
-        The list may be filtered or paginated depending on the provider's capabilities.
-        
-        Returns:
-            List[str]: List of available symbols/tickers.
-                Examples: ["ES", "MES", "NQ", "VIX", "AAPL", "MSFT", ...]
-        
-        Raises:
-            AuthenticationError: If authentication is required but not completed.
-            ConnectionError: If unable to connect to provider.
-            TimeoutError: If request times out.
-        
-        Notes:
-            - Some providers may have thousands of symbols; implementations should cache.
-            - Symbol format is provider-specific; adapters must normalize.
-            - The list may be filtered (e.g., only US equities, only futures, etc.).
-        
-        Example:
-            >>> provider = AlphaVantageProvider(api_key='KEY')
-            >>> provider.authenticate()
-            >>> symbols = provider.get_available_symbols()
-            >>> print(len(symbols))
-            2000
-            >>> print(symbols[:5])
-            ['AAPL', 'MSFT', 'AMZN', 'GOOGL', 'TSLA']
+        Retrieve the list of symbols (assets) available from this provider.
+
+        This list should be used to validate symbols before calling fetch_ohlcv().
+        The returned list may be cached to avoid repeated API calls.
+
+        Returns
+        -------
+        List[str]
+            A list of supported symbols in uppercase. Format is vendor-specific
+            (e.g., ["ES", "MES", "NQ", "VIX", "AAPL", ...]).
+
+        Raises
+        ------
+        AuthenticationError
+            If the session is no longer authenticated.
+        ConnectionError
+            If the connection to the provider is lost.
+        RateLimitError
+            If API rate limits are exceeded (may be retried).
+
+        Notes
+        -----
+        Caching: Implementations may cache this list and only refresh it
+        when authenticate() is called or on explicit request.
+
+        Returns: If the provider supports thousands of symbols, consider
+        implementing a separate method for filtered symbol lookup
+        (not in this interface).
+
+        Examples
+        --------
+        >>> provider = ConcreteDataProvider(api_key="...")
+        >>> provider.authenticate()
+        >>> symbols = provider.get_available_symbols()
+        >>> if "ES" in symbols:
+        ...     df = provider.fetch_ohlcv("ES", ...)
         """
         pass
-    
+
     def handle_pagination(
         self,
-        symbol: str,
-        start_date: datetime,
-        end_date: datetime,
-        timeframe: str,
-        page_size: int = 1000
-    ) -> List[pd.DataFrame]:
+        request_func,
+        max_records_per_request: int,
+        total_records: Optional[int] = None,
+        **kwargs,
+    ) -> pd.DataFrame:
         """
         Handle pagination for large data requests.
-        
-        For providers with strict data limits per request, this method breaks large
-        date ranges into smaller chunks and fetches each chunk separately.
-        
-        This is a convenience method that automatically handles pagination logic.
-        Default implementation is provided but can be overridden for vendor-specific
-        pagination strategies.
-        
-        Parameters:
-            symbol: Asset symbol to fetch.
-            start_date: Start of date range (inclusive).
-            end_date: End of date range (inclusive).
-            timeframe: Candlestick period (e.g., "1D", "1H").
-            page_size: Maximum number of bars per request (default: 1000).
-                Some vendors may have stricter limits; check adapter documentation.
-        
-        Returns:
-            List[pd.DataFrame]: List of DataFrames, one per page.
-                Each DataFrame follows the standard OHLCV schema.
-                Example: [df_page1, df_page2, df_page3]
-        
-        Raises:
-            AuthenticationError: If authentication required but not completed.
-            DataNotAvailableError: If data for symbol not available.
-            ValidationError: If parameters are invalid.
-            RateLimitError: If rate limit exceeded during pagination.
-            TimeoutError: If any request times out.
-        
-        Notes:
-            - Default implementation chunks by date range; override for custom logic.
-            - Pagination may be necessary due to:
-              - API limits on records per request
-              - Memory constraints for large date ranges
-              - Rate limiting on concurrent requests
-            - Caller should combine results: pd.concat(pages, ignore_index=False)
-        
-        Example:
-            >>> provider = AlphaVantageProvider(api_key='KEY')
-            >>> provider.authenticate()
-            >>> pages = provider.handle_pagination(
-            ...     symbol='ES',
-            ...     start_date=datetime(2020, 1, 1),
-            ...     end_date=datetime(2024, 12, 31),
-            ...     timeframe='1D'
-            ... )
-            >>> df = pd.concat(pages, ignore_index=False).sort_index()
-            >>> print(df.shape)
-            (1200, 6)  # 5 years of daily data
+
+        This method is a utility for implementations that need to paginate
+        through large result sets. It is not abstract; implementations may use it
+        or override it with vendor-specific pagination logic.
+
+        Parameters
+        ----------
+        request_func : callable
+            A function that accepts pagination parameters and returns
+            a DataFrame. Signature should be compatible with:
+            request_func(offset=..., limit=..., **kwargs)
+        max_records_per_request : int
+            Maximum number of records the vendor allows per request.
+        total_records : Optional[int]
+            Total number of records expected. If None, will paginate until
+            request_func returns fewer records than max_records_per_request.
+        **kwargs
+            Additional keyword arguments to pass to request_func.
+
+        Returns
+        -------
+        pd.DataFrame
+            Combined DataFrame from all paginated requests, in the standardized
+            OHLCV schema.
+
+        Raises
+        ------
+        PaginationError
+            If pagination metadata is invalid or corrupt.
+
+        Notes
+        -----
+        This is a helper method for implementations. Concrete providers may
+        handle pagination differently or not use this method at all.
+
+        Example Implementation (for a hypothetical adapter):
+        >>> def fetch_ohlcv(self, symbol, start_date, end_date, timeframe):
+        ...     def request_page(offset, limit):
+        ...         return self.api.get_bars(
+        ...             symbol=symbol,
+        ...             start=start_date,
+        ...             end=end_date,
+        ...             timeframe=timeframe,
+        ...             offset=offset,
+        ...             limit=limit,
+        ...         )
+        ...     return self.handle_pagination(
+        ...         request_page,
+        ...         max_records_per_request=1000,
+        ...     )
         """
-        # Default implementation: estimate business days and chunk
-        # Providers can override for more sophisticated pagination
-        business_days = pd.bdate_range(start=start_date, end=end_date).size
-        num_pages = max(1, (business_days + page_size - 1) // page_size)
-        
-        if num_pages == 1:
-            return [self.fetch_ohlcv(symbol, start_date, end_date, timeframe)]
-        
-        pages = []
-        current_date = start_date
-        
-        for page_num in range(num_pages):
-            # Calculate page end date
-            page_end = min(
-                current_date + pd.Timedelta(days=page_size),
-                end_date
-            )
-            
-            # Fetch this page
-            page_data = self.fetch_ohlcv(symbol, current_date, page_end, timeframe)
-            if not page_data.empty:
-                pages.append(page_data)
-            
-            # Move to next page
-            current_date = page_end + pd.Timedelta(days=1)
-            
-            if current_date > end_date:
+        all_data = []
+        offset = 0
+
+        while True:
+            batch = request_func(offset=offset, limit=max_records_per_request, **kwargs)
+
+            if batch.empty:
                 break
-        
-        return pages
-    
+
+            all_data.append(batch)
+            offset += len(batch)
+
+            if total_records is not None and offset >= total_records:
+                break
+
+            if len(batch) < max_records_per_request:
+                break
+
+        if not all_data:
+            return pd.DataFrame(
+                columns=["open", "high", "low", "close", "volume"],
+                index=pd.DatetimeIndex([], name="timestamp"),
+            )
+
+        result = pd.concat(all_data, ignore_index=False)
+        return result
+
+    def validate_ohlcv_data(self, df: pd.DataFrame) -> None:
+        """
+        Validate that a DataFrame conforms to the standardized OHLCV schema.
+
+        This is a helper method that implementations can call to validate
+        their data before returning. Raises ValidationError if data is invalid.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame to validate.
+
+        Raises
+        ------
+        ValidationError
+            If the DataFrame doesn't conform to the schema.
+        """
+        from src.data_ingestion.exceptions import ValidationError
+
+        # Check columns
+        required_columns = {"open", "high", "low", "close", "volume"}
+        if set(df.columns) != required_columns:
+            raise ValidationError(
+                f"DataFrame columns must be {required_columns}, got {set(df.columns)}"
+            )
+
+        # Check index
+        if not isinstance(df.index, pd.DatetimeIndex):
+            raise ValidationError("DataFrame index must be DatetimeIndex")
+        if df.index.name != "timestamp":
+            raise ValidationError("DatetimeIndex name must be 'timestamp'")
+        if df.index.tz is None or str(df.index.tz) != "UTC":
+            raise ValidationError("DatetimeIndex must be timezone-aware (UTC)")
+
+        # Check dtypes
+        if df["volume"].dtype != "int64":
+            raise ValidationError(f"Volume dtype must be int64, got {df['volume'].dtype}")
+        for col in ["open", "high", "low", "close"]:
+            if df[col].dtype != "float64":
+                raise ValidationError(f"{col} dtype must be float64, got {df[col].dtype}")
+
+        # Check data validity
+        if (df["volume"] < 0).any():
+            raise ValidationError("Volume must be non-negative")
+        if (df["high"] < df["low"]).any():
+            raise ValidationError("High must be >= Low")
+
     def get_contract_details(self, symbol: str) -> Dict[str, Any]:
         """
-        Retrieve detailed information about a contract/instrument.
-        
-        This is an optional method for retrieving metadata about a specific symbol.
-        Implementation is not required but recommended for futures and derivatives.
-        
-        Parameters:
-            symbol: Asset symbol (e.g., "MES", "ES", "VIX").
-        
-        Returns:
-            Dict[str, Any]: Contract details with possible keys:
-                - name: Human-readable name (e.g., "E-mini S&P 500 December 2024")
-                - exchange: Trading exchange (e.g., "CME", "CBOE")
-                - contract_type: "STOCK", "FUTURE", "OPTION", "INDEX", etc.
-                - underlying: Underlying asset symbol (for derivatives)
-                - multiplier: Contract multiplier (e.g., 50 for MES, 100 for ES)
-                - min_tick: Minimum price movement
-                - expiration: Expiration date for futures (datetime or string)
-                - active: Whether contract is currently trading (bool)
-        
-        Raises:
-            AuthenticationError: If authentication required but not completed.
-            DataNotAvailableError: If symbol not found.
-            ValidationError: If symbol format invalid.
-        
-        Notes:
-            - This method is optional; return empty dict if not implemented.
-            - Different providers have different contract metadata.
-            - For stocks, many fields may be None or not applicable.
-        
-        Example:
-            >>> provider = InteractiveBrokersProvider()
-            >>> provider.authenticate()
-            >>> details = provider.get_contract_details('MES')
-            >>> print(details)
-            {
-                'name': 'E-mini S&P 500 December 2024',
-                'exchange': 'CME',
-                'contract_type': 'FUTURE',
-                'multiplier': 50,
-                'expiration': datetime(2024, 12, 20)
-            }
+        Retrieve contract details for a symbol (optional, vendor-specific).
+
+        This is an optional method that providers may implement to return
+        additional metadata about a symbol (e.g., contract multiplier, tick size,
+        trading hours, currency).
+
+        Parameters
+        ----------
+        symbol : str
+            The symbol to retrieve details for.
+
+        Returns
+        -------
+        Dict[str, Any]
+            A dictionary with vendor-specific contract details. Common keys:
+            - 'multiplier': Contract multiplier (e.g., 50 for ES)
+            - 'tick_size': Minimum price movement
+            - 'currency': Currency in which prices are quoted
+            - 'trading_hours': Trading hours in a standard format
+            - 'exchange': Primary exchange for the symbol
+
+        Raises
+        ------
+        DataNotAvailableError
+            If the symbol is not found.
+        NotImplementedError
+            If this provider doesn't support contract details.
+
+        Notes
+        -----
+        This method is optional. Providers that don't support it may raise
+        NotImplementedError or return an empty dictionary.
         """
-        # Default: empty dict (optional method)
-        return {}
-    
-    def __repr__(self) -> str:
-        """Return string representation of provider."""
-        auth_status = "authenticated" if self._authenticated else "not authenticated"
-        return f"{self.__class__.__name__}(name='{self.name}', {auth_status})"
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support contract details"
+        )

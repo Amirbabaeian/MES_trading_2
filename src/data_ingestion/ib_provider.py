@@ -1,374 +1,372 @@
 """
-Interactive Brokers (IB) data provider adapter.
+Interactive Brokers data provider adapter.
 
-This module implements a concrete adapter for Interactive Brokers that conforms
-to the DataProvider interface. Currently implemented as a stub that returns
-synthetic data; actual API integration will be added once IB is selected as
-the data vendor.
+This module provides a stub implementation of the DataProvider interface for
+Interactive Brokers API. It currently returns synthetic mock data matching
+the standardized schema. Full implementation will be completed once
+Interactive Brokers is selected as the primary vendor.
 
-The adapter handles:
-- Authentication via TWS/Gateway session
-- OHLCV data fetching for stocks, futures, options, and forex
-- Symbol/contract management
-- Rate limiting and error handling
-- Session management and reconnection
+TODO: Complete implementation with actual Interactive Brokers API integration
+- Implement real authentication using TWS (Trader Workstation) or Gateway API
+- Implement actual API calls to fetch historical data
+- Handle Interactive Brokers rate limits and connection requirements
+- Implement pagination for large date ranges
+- Add support for extended trading hours
 """
 
 import logging
-from typing import List, Optional, Dict, Any
 from datetime import datetime
-import pandas as pd
+from typing import List, Dict, Any, Optional
 
-from .base_provider import DataProvider
-from .mock_provider import MockProvider
-from .rate_limiter import RateLimiterMixin, retry_with_backoff
-from .exceptions import (
+import pandas as pd
+import numpy as np
+
+from src.data_ingestion.base_provider import DataProvider
+from src.data_ingestion.exceptions import (
     AuthenticationError,
     DataNotAvailableError,
     ValidationError,
-    ConnectionError,
+    ConfigurationError,
 )
+from src.data_ingestion.rate_limiter import RateLimiter, ExponentialBackoff
 
 logger = logging.getLogger(__name__)
 
 
-class IBDataProvider(RateLimiterMixin, DataProvider):
+class IBDataProvider(DataProvider):
     """
-    Interactive Brokers data provider adapter.
+    Interactive Brokers data provider adapter (stub implementation).
     
-    This adapter implements the DataProvider interface for Interactive Brokers,
-    providing access to a wide range of asset classes including stocks, futures,
-    options, and forex.
+    This is a stub implementation that returns synthetic OHLCV data matching
+    the standardized schema. It serves as a template for full implementation
+    once Interactive Brokers is selected.
     
-    Current Implementation:
-    - Stub implementation using MockProvider for synthetic data
-    - Configuration structure ready for actual API integration
-    - Rate limiting framework in place
-    - Error handling for common IB scenarios
-    
-    Future Work (TODO):
-    - Replace mock data with actual IB API calls
-    - Implement TWS/Gateway connection management
-    - Add contract specification handling
-    - Support for multiple asset classes (stocks, futures, options, forex)
-    - Handle IB-specific data formats and quirks
-    - Implement streaming market data connections
-    
-    Supported Symbols (Futures Focus):
-    - ES (E-mini S&P 500)
-    - MES (Micro E-mini S&P 500)
-    - NQ (E-mini Nasdaq-100)
-    - CL (Crude Oil)
-    - GC (Gold)
-    - VIX (Volatility Index)
-    
-    Example:
-        >>> provider = IBDataProvider(
-        ...     api_key='YOUR_IB_ACCOUNT',
-        ...     api_password='YOUR_PASSWORD'
-        ... )
-        >>> provider.authenticate()
-        >>> df = provider.fetch_ohlcv(
-        ...     symbol='ES',
-        ...     start_date=datetime(2024, 1, 1),
-        ...     end_date=datetime(2024, 12, 31),
-        ...     timeframe='1D'
-        ... )
+    Parameters
+    ----------
+    account_id : str
+        Interactive Brokers account ID
+    host : str
+        TWS API host (default: "127.0.0.1")
+    port : int
+        TWS API port (default: 7497 for live, 7498 for paper)
+    client_id : int
+        Unique client ID for this connection (default: 1)
+    seed : int
+        Random seed for synthetic data (default: 42)
+    requests_per_second : float
+        Rate limit: requests per second (default: 5)
     """
     
-    # Default supported symbols (futures-focused)
-    DEFAULT_SYMBOLS = {
-        'ES': 'E-mini S&P 500 Futures',
-        'MES': 'Micro E-mini S&P 500 Futures',
-        'NQ': 'E-mini Nasdaq-100 Futures',
-        'YM': 'E-mini Dow Futures',
-        'RTY': 'E-mini Russell 2000 Futures',
-        'CL': 'Crude Oil Futures',
-        'GC': 'Gold Futures',
-        'SIL': 'Silver Futures',
-        'VIX': 'Volatility Index Futures',
-        'SPY': 'SPY Stock ETF',
-        'QQQ': 'QQQ Stock ETF',
-        'IWM': 'IWM Stock ETF',
-    }
+    # Interactive Brokers supports these major indices and stocks
+    DEFAULT_SYMBOLS = [
+        "ES",      # E-mini S&P 500 Futures
+        "MES",     # Micro E-mini S&P 500 Futures
+        "NQ",      # E-mini Nasdaq-100 Futures
+        "YM",      # E-mini Dow Jones Futures
+        "RTY",     # E-mini Russell 2000 Futures
+        "VIX",     # Volatility Index
+        "AAPL",    # Apple
+        "MSFT",    # Microsoft
+        "GOOGL",   # Google
+        "AMZN",    # Amazon
+    ]
     
     def __init__(
         self,
+        account_id: str = "",
         host: str = "127.0.0.1",
         port: int = 7497,
         client_id: int = 1,
-        api_key: Optional[str] = None,
-        api_password: Optional[str] = None,
-        max_requests: int = 100,
-        period_seconds: float = 60.0,
-        symbols: Optional[Dict[str, str]] = None,
-    ):
-        """
-        Initialize Interactive Brokers data provider.
+        seed: int = 42,
+        requests_per_second: float = 5.0,
+    ) -> None:
+        """Initialize the Interactive Brokers provider."""
+        super().__init__()
         
-        Args:
-            host: TWS/Gateway host (default: 127.0.0.1)
-            port: TWS/Gateway port (default: 7497)
-            client_id: Client ID for IB connection
-            api_key: IB account identifier or username
-            api_password: IB password or authentication token
-            max_requests: Max API requests per period (rate limiting)
-            period_seconds: Rate limit period in seconds
-            symbols: Custom symbol dictionary; uses DEFAULT_SYMBOLS if not provided
-        
-        Notes:
-            - For real IB connections, valid TWS/Gateway must be running
-            - In stub mode (current), credentials are not validated
-            - Actual API integration will require ibapi library
-        """
-        super().__init__(
-            name="IBDataProvider",
-            max_requests=max_requests,
-            period_seconds=period_seconds
-        )
-        
+        self.account_id = account_id
         self.host = host
         self.port = port
         self.client_id = client_id
-        self.api_key = api_key
-        self.api_password = api_password
-        self.symbols = symbols or self.DEFAULT_SYMBOLS.copy()
+        self.seed = seed
+        self.rng = np.random.RandomState(seed)
         
-        # Connection state (TODO: actual IB connection)
-        self._ib_connection = None
+        # Rate limiting
+        self.rate_limiter = RateLimiter(
+            requests_per_second=requests_per_second,
+            burst_size=3,
+        )
+        self.backoff = ExponentialBackoff(
+            initial_delay=1.0,
+            max_delay=60.0,
+            max_retries=3,
+        )
         
-        # Mock provider for stub implementation
-        self._mock_provider = MockProvider(seed=42)
+        # Connection state
+        self._ib_client = None
+        self._supported_symbols = self.DEFAULT_SYMBOLS.copy()
     
-    @retry_with_backoff(max_retries=3, base_delay=1.0)
     def authenticate(self) -> None:
         """
-        Authenticate with Interactive Brokers.
+        Authenticate with Interactive Brokers TWS or Gateway API.
         
-        This method attempts to establish a connection to TWS/Gateway.
-        Currently stubbed to always succeed; actual implementation will
-        validate IB credentials and establish connection.
+        TODO: Full implementation
+        - Connect to TWS/Gateway on configured host:port
+        - Validate connection with account information
+        - Verify permissions for data access
+        - Test API responsiveness
         
-        Raises:
-            AuthenticationError: If unable to connect to TWS/Gateway
-            ConnectionError: If network connectivity issue occurs
+        Current behavior: Raises NotImplementedError with credential structure.
         
-        TODO:
-            - Import and use ibapi.client.EClient for actual API
-            - Handle TWS/Gateway not running error
-            - Validate account credentials
-            - Implement reconnection logic
+        Raises
+        ------
+        AuthenticationError
+            If connection fails or credentials are invalid
+        ConfigurationError
+            If required configuration is missing
         """
-        logger.info(f"Authenticating with Interactive Brokers at {self.host}:{self.port}")
+        logger.info(
+            f"IBDataProvider: Authenticating to {self.host}:{self.port} "
+            f"(client_id={self.client_id})"
+        )
         
-        # TODO: Actual IB authentication
-        # This is a stub implementation
-        try:
-            # In real implementation:
-            # from ibapi.client import EClient, EWrapper
-            # self._ib_connection = EClient(EWrapper())
-            # self._ib_connection.connect(self.host, self.port, self.client_id)
-            
-            logger.info("IB stub authentication successful (mock mode)")
-            self._authenticated = True
-            self._mock_provider.authenticate()
-        except Exception as e:
-            logger.error(f"IB authentication failed: {str(e)}")
-            raise AuthenticationError(
-                f"Failed to connect to IB at {self.host}:{self.port}: {str(e)}",
-                provider="InteractiveBrokers"
-            ) from e
+        # Credential structure for future implementation
+        credentials = {
+            "host": self.host,
+            "port": self.port,
+            "client_id": self.client_id,
+            "account_id": self.account_id,
+        }
+        
+        if not self.account_id:
+            raise ConfigurationError(
+                "account_id is required for Interactive Brokers authentication"
+            )
+        
+        # TODO: Implement actual TWS/Gateway connection
+        # import ib_insync
+        # try:
+        #     self._ib_client = ib_insync.IB()
+        #     self._ib_client.connect(self.host, self.port, self.client_id)
+        #     # Verify account access
+        #     account_info = self._ib_client.accountSummary(self.account_id)
+        # except Exception as e:
+        #     raise AuthenticationError(f"Failed to connect to IB: {e}")
+        
+        logger.debug(f"Interactive Brokers credentials structure: {credentials}")
+        logger.warning(
+            "IBDataProvider.authenticate(): Full implementation pending. "
+            "Currently using stub with synthetic data."
+        )
+        
+        self._authenticated = True
     
-    @retry_with_backoff(max_retries=2, base_delay=0.5)
+    def disconnect(self) -> None:
+        """
+        Close the connection to Interactive Brokers.
+        
+        TODO: Implement actual disconnection logic
+        """
+        if self._ib_client:
+            try:
+                # TODO: self._ib_client.disconnect()
+                logger.info("Disconnected from Interactive Brokers")
+            except Exception as e:
+                logger.error(f"Error disconnecting from Interactive Brokers: {e}")
+        
+        self._authenticated = False
+    
     def fetch_ohlcv(
         self,
         symbol: str,
         start_date: datetime,
         end_date: datetime,
-        timeframe: str = "1D"
+        timeframe: str,
     ) -> pd.DataFrame:
         """
-        Fetch OHLCV data from Interactive Brokers.
+        Fetch OHLCV data for a symbol (stub returns synthetic data).
         
-        Currently returns synthetic mock data. Actual implementation will:
-        - Query IB historical data API
-        - Handle contract specifications
-        - Manage data pagination for large ranges
-        - Apply dividend/split adjustments
+        TODO: Full implementation
+        - Translate timeframe format to IB API format
+        - Handle contract lookup (might need different contract IDs)
+        - Paginate for large date ranges (IB limits ~1 year per request)
+        - Handle split/dividend adjustments
+        - Implement proper error handling for missing data
         
-        Args:
-            symbol: Asset symbol (e.g., 'ES', 'AAPL', 'CL')
-            start_date: Range start (inclusive)
-            end_date: Range end (inclusive)
-            timeframe: Candlestick period ('1M', '5M', '15M', '1H', '1D', '1W')
+        Currently returns synthetic data matching the standardized schema.
         
-        Returns:
-            DataFrame with OHLCV data in standard schema
+        Parameters
+        ----------
+        symbol : str
+            Stock/futures symbol (e.g., "ES", "AAPL")
+        start_date : datetime
+            Start date (inclusive)
+        end_date : datetime
+            End date (inclusive)
+        timeframe : str
+            Aggregation interval ("1D", "1H", "5m", etc.)
         
-        Raises:
-            AuthenticationError: If not authenticated
-            DataNotAvailableError: If symbol/timeframe not available
-            ValidationError: If parameters invalid
-            RateLimitError: If rate limit exceeded
+        Returns
+        -------
+        pd.DataFrame
+            OHLCV data in standardized schema
         
-        TODO:
-            - Implement actual IB historical data requests
-            - Handle contract multipliers for futures
-            - Apply automatic dividend adjustments
-            - Support intraday timeframes (1M, 5M, 15M, 1H)
-            - Handle VIX-specific quirks
+        Raises
+        ------
+        AuthenticationError
+            If not authenticated
+        DataNotAvailableError
+            If symbol is not supported
+        ValidationError
+            If date range is invalid
         """
         if not self._authenticated:
             raise AuthenticationError(
-                "Not authenticated. Call authenticate() first.",
-                provider="InteractiveBrokers"
+                "Not authenticated. Call authenticate() first."
             )
         
-        if symbol not in self.symbols:
-            raise ValidationError(
-                f"Symbol '{symbol}' not supported",
-                field="symbol",
-                value=symbol
-            )
-        
-        if start_date > end_date:
-            raise ValidationError("start_date must be <= end_date")
-        
-        logger.info(f"Fetching {symbol} OHLCV data: {start_date} to {end_date} ({timeframe})")
-        
-        # Check and enforce rate limit
-        self.check_rate_limit()
-        
-        try:
-            # TODO: Replace with actual IB API call
-            # Real implementation would call:
-            # contract = Contract(...)  # Create IB contract object
-            # self._ib_connection.reqHistoricalData(...)
-            # Parse response and normalize to standard schema
-            
-            # Stub: use mock provider to generate synthetic data
-            df = self._mock_provider.fetch_ohlcv(symbol, start_date, end_date, timeframe)
-            
-            # Record the request for rate limiting
-            self.record_api_request()
-            
-            logger.info(f"Successfully fetched {len(df)} bars for {symbol}")
-            return df
-        
-        except ValidationError:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to fetch {symbol} OHLCV data: {str(e)}")
+        if symbol not in self._supported_symbols:
             raise DataNotAvailableError(
-                f"Failed to fetch data for {symbol}: {str(e)}",
-                symbol=symbol,
-                start_date=start_date,
-                end_date=end_date
-            ) from e
+                f"Symbol {symbol} not supported by Interactive Brokers"
+            )
+        
+        if end_date < start_date:
+            raise ValidationError("end_date must be after start_date")
+        
+        # Apply rate limiting
+        self.rate_limiter.wait_if_needed()
+        
+        logger.info(
+            f"Fetching {symbol} {timeframe} data from {start_date} to {end_date}"
+        )
+        
+        # TODO: Implement actual API call
+        # self._ib_client.qualifyContracts(contract)
+        # bars = self._ib_client.reqHistoricalData(
+        #     contract,
+        #     endDateTime=end_date,
+        #     durationStr=f"{(end_date - start_date).days}D",
+        #     barSizeSetting=self._timeframe_to_ib(timeframe),
+        #     whatToShow="TRADES",
+        #     useRTH=True,
+        # )
+        
+        # For now, return synthetic data
+        return self._generate_synthetic_data(symbol, start_date, end_date, timeframe)
     
     def get_available_symbols(self) -> List[str]:
         """
         Get list of available symbols from Interactive Brokers.
         
-        Currently returns a fixed list. Actual implementation will query
-        IB's symbol database and cache the results.
+        TODO: Full implementation
+        - Query IB API for available contracts
+        - Cache results and refresh on demand
+        - Implement filtering by asset class
         
-        Returns:
-            List of supported symbol strings
+        Currently returns hardcoded list of common symbols.
         
-        TODO:
-            - Query actual IB symbol database
-            - Implement result caching with TTL
-            - Filter by asset class (stocks, futures, options, forex)
-            - Handle symbol aliasing and normalization
+        Returns
+        -------
+        List[str]
+            List of supported symbols
+        
+        Raises
+        ------
+        AuthenticationError
+            If not authenticated
         """
-        logger.debug(f"Available symbols: {list(self.symbols.keys())}")
-        return list(self.symbols.keys())
+        if not self._authenticated:
+            raise AuthenticationError(
+                "Not authenticated. Call authenticate() first."
+            )
+        
+        logger.debug(f"Available symbols: {self._supported_symbols}")
+        return self._supported_symbols.copy()
     
-    def get_contract_details(self, symbol: str) -> Dict[str, Any]:
+    def _generate_synthetic_data(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        timeframe: str,
+    ) -> pd.DataFrame:
         """
-        Retrieve contract details for a symbol.
+        Generate synthetic OHLCV data for testing.
         
-        Returns metadata about a specific contract including multiplier,
-        exchange, minimum tick size, etc. Essential for futures trading.
+        This is a temporary implementation that returns realistic mock data.
+        Will be removed once actual API integration is complete.
         
-        Args:
-            symbol: Symbol to get details for
+        Parameters
+        ----------
+        symbol : str
+            Symbol to generate data for
+        start_date : datetime
+            Start date
+        end_date : datetime
+            End date
+        timeframe : str
+            Aggregation interval
         
-        Returns:
-            Dictionary with contract metadata
-        
-        Raises:
-            ValidationError: If symbol not found
-        
-        TODO:
-            - Query actual IB ContractDetails API
-            - Cache results locally
-            - Handle different asset classes
-            - Return full contract specification
+        Returns
+        -------
+        pd.DataFrame
+            Synthetic OHLCV data
         """
-        if symbol not in self.symbols:
-            raise ValidationError(f"Symbol '{symbol}' not found", field="symbol")
+        # Generate trading dates (exclude weekends)
+        all_dates = pd.bdate_range(start=start_date, end=end_date, freq="B")
         
-        # Stub implementation - return basic details
-        contract_details = {
-            'symbol': symbol,
-            'name': self.symbols[symbol],
-            'exchange': self._get_exchange_for_symbol(symbol),
-            'contract_type': self._get_contract_type_for_symbol(symbol),
-            'active': True,
+        if len(all_dates) == 0:
+            return pd.DataFrame(
+                columns=["open", "high", "low", "close", "volume"],
+                index=pd.DatetimeIndex([], name="timestamp", tz="UTC"),
+            )
+        
+        n = len(all_dates)
+        
+        # Price baseline depends on symbol
+        price_map = {
+            "ES": 4000.0,
+            "MES": 4000.0,
+            "NQ": 12000.0,
+            "YM": 33000.0,
+            "RTY": 1800.0,
+            "VIX": 18.0,
+            "AAPL": 150.0,
+            "MSFT": 300.0,
+            "GOOGL": 2500.0,
+            "AMZN": 100.0,
         }
+        start_price = price_map.get(symbol, 100.0)
         
-        # Add multiplier for futures
-        if contract_details['contract_type'] == 'FUTURE':
-            contract_details['multiplier'] = self._get_multiplier_for_symbol(symbol)
+        # Generate realistic price movements
+        returns = self.rng.normal(0.0005, 0.015, n)
+        close_prices = start_price * np.exp(np.cumsum(returns))
         
-        logger.debug(f"Contract details for {symbol}: {contract_details}")
-        return contract_details
-    
-    def _get_exchange_for_symbol(self, symbol: str) -> str:
-        """Get exchange for a symbol (CME, NASDAQ, NYSE, etc.)."""
-        exchanges = {
-            'ES': 'CME', 'MES': 'CME', 'NQ': 'CME', 'YM': 'CME',
-            'RTY': 'CME', 'CL': 'NYMEX', 'GC': 'COMEX', 'SIL': 'COMEX',
-            'VIX': 'CBOE', 'SPY': 'NASDAQ', 'QQQ': 'NASDAQ', 'IWM': 'NASDAQ'
-        }
-        return exchanges.get(symbol, 'UNKNOWN')
-    
-    def _get_contract_type_for_symbol(self, symbol: str) -> str:
-        """Get contract type for a symbol."""
-        futures = {'ES', 'MES', 'NQ', 'YM', 'RTY', 'CL', 'GC', 'SIL', 'VIX'}
-        stocks = {'SPY', 'QQQ', 'IWM'}
+        # Generate OHLC
+        opens = close_prices + self.rng.normal(0, 5, n)
+        highs = np.maximum(opens, close_prices) + np.abs(
+            self.rng.normal(0, 10, n)
+        )
+        lows = np.minimum(opens, close_prices) - np.abs(
+            self.rng.normal(0, 10, n)
+        )
         
-        if symbol in futures:
-            return 'FUTURE'
-        elif symbol in stocks:
-            return 'STOCK'
-        return 'UNKNOWN'
-    
-    def _get_multiplier_for_symbol(self, symbol: str) -> int:
-        """Get contract multiplier for a symbol."""
-        multipliers = {
-            'ES': 50, 'MES': 5, 'NQ': 100, 'YM': 5, 'RTY': 50,
-            'CL': 100, 'GC': 100, 'SIL': 5000, 'VIX': 100
-        }
-        return multipliers.get(symbol, 1)
-    
-    def close(self) -> None:
-        """
-        Close IB connection and cleanup resources.
+        # Generate volume
+        volume_base = 1000000 if symbol in ["ES", "MES"] else 500000
+        volumes = volume_base + self.rng.randint(-200000, 200000, n)
+        volumes = np.maximum(volumes, 10000).astype("int64")
         
-        TODO: Implement actual IB connection cleanup
-        """
-        if self._ib_connection:
-            try:
-                # self._ib_connection.disconnect()
-                logger.info("IB connection closed")
-            except Exception as e:
-                logger.error(f"Error closing IB connection: {str(e)}")
+        # Create DataFrame
+        df = pd.DataFrame(
+            {
+                "open": opens.astype("float64"),
+                "high": highs.astype("float64"),
+                "low": lows.astype("float64"),
+                "close": close_prices.astype("float64"),
+                "volume": volumes,
+            },
+            index=pd.DatetimeIndex(all_dates, name="timestamp"),
+        )
         
-        self._authenticated = False
-    
-    def __del__(self):
-        """Ensure connection is closed when object is destroyed."""
-        self.close()
+        df.index = df.index.tz_localize("UTC")
+        
+        return df

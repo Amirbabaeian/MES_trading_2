@@ -1,394 +1,430 @@
 """
 Databento data provider adapter.
 
-This module implements a concrete adapter for Databento that conforms
-to the DataProvider interface. Currently implemented as a stub that returns
-synthetic data; actual API integration will be added once Databento is selected
-as the data vendor.
+This module provides a stub implementation of the DataProvider interface for
+Databento's market data API. It currently returns synthetic mock data matching
+the standardized schema. Full implementation will be completed once Databento
+is selected as the primary vendor.
 
-The adapter handles:
-- Authentication via API key
-- OHLCV data fetching for stocks, futures, and options
-- Symbol/contract management
-- Rate limiting and data normalization
-- Response parsing from Databento's binary format
+Databento provides institutional-grade market data for futures, equities, and
+options with low latency and high granularity (tick data, OHLCV aggregations).
+The API supports both REST and streaming modes.
+
+TODO: Complete implementation with actual Databento API integration
+- Implement real authentication with API key and client ID
+- Implement actual API calls via databento-py SDK or REST API
+- Handle Databento's data subscriptions and market datasets
+- Implement pagination for large historical date ranges
+- Support tick data and aggregated OHLCV data
+- Handle Databento-specific error codes and rate limiting
 """
 
 import logging
-from typing import List, Optional, Dict, Any
 from datetime import datetime
-import pandas as pd
+from typing import List, Dict, Any, Optional
 
-from .base_provider import DataProvider
-from .mock_provider import MockProvider
-from .rate_limiter import RateLimiterMixin, retry_with_backoff
-from .exceptions import (
+import pandas as pd
+import numpy as np
+
+from src.data_ingestion.base_provider import DataProvider
+from src.data_ingestion.exceptions import (
     AuthenticationError,
     DataNotAvailableError,
     ValidationError,
-    ConnectionError,
+    ConfigurationError,
+    RateLimitError,
 )
+from src.data_ingestion.rate_limiter import RateLimiter, ExponentialBackoff
 
 logger = logging.getLogger(__name__)
 
 
-class DatabentoDataProvider(RateLimiterMixin, DataProvider):
+class DatabentoDataProvider(DataProvider):
     """
-    Databento data provider adapter.
+    Databento data provider adapter (stub implementation).
     
-    This adapter implements the DataProvider interface for Databento,
-    providing access to high-quality market data for stocks, futures, and options.
+    This is a stub implementation that returns synthetic OHLCV data matching
+    the standardized schema. It serves as a template for full implementation
+    once Databento is selected.
     
-    Databento specializes in:
-    - Efficient binary data format (DBN) with high compression
-    - Tick-level and OHLCV data
-    - Historical data and live streaming
-    - Unified API across multiple asset classes
+    Databento provides:
+    - Futures: CME, CBOT, COMEX, NYMEX contracts
+    - Equities: US stocks with tick-level data
+    - Options: Equity and index options
+    - Crypto: Bitcoin, Ethereum, and other cryptocurrencies
     
-    Current Implementation:
-    - Stub implementation using MockProvider for synthetic data
-    - Configuration structure ready for actual API integration
-    - Rate limiting framework (Databento has flexible tier-based limits)
-    - Error handling for common Databento scenarios
-    
-    Future Work (TODO):
-    - Replace mock data with actual Databento API calls
-    - Implement REST client for Databento /timeseries endpoint
-    - Parse Databento's DBN binary format
-    - Support native streaming connections for live data
-    - Handle Databento's unified symbol conventions
-    - Implement chunked downloads for large datasets
-    
-    Supported Symbols (Futures Focus):
-    - ES, MES, NQ (S&P 500 and Nasdaq futures)
-    - CL, GC (Energy and metals futures)
-    - Extensive stock support through unified symbol mapping
-    
-    Example:
-        >>> provider = DatabentoDataProvider(api_key='YOUR_DATABENTO_KEY')
-        >>> provider.authenticate()
-        >>> df = provider.fetch_ohlcv(
-        ...     symbol='ES',
-        ...     start_date=datetime(2024, 1, 1),
-        ...     end_date=datetime(2024, 12, 31),
-        ...     timeframe='1D'
-        ... )
+    Parameters
+    ----------
+    api_key : str
+        Databento API key for authentication
+    client : str
+        Databento client ID (typically email or organization identifier)
+    dataset : str
+        Default dataset to use (e.g., "GLBX", "XNAS", "XNYS")
+    base_url : str
+        API base URL (default: "https://api.databento.com")
+    seed : int
+        Random seed for synthetic data (default: 42)
+    requests_per_second : float
+        Rate limit: requests per second (default: 10)
     """
     
-    # Default supported symbols (futures and stocks)
-    DEFAULT_SYMBOLS = {
-        # Equity Index Futures
-        'ES': 'E-mini S&P 500',
-        'MES': 'Micro E-mini S&P 500',
-        'NQ': 'E-mini Nasdaq-100',
-        'YM': 'E-mini Dow',
-        'RTY': 'E-mini Russell 2000',
-        # Energy & Metals
-        'CL': 'Crude Oil',
-        'GC': 'Gold',
-        'SIL': 'Silver',
-        # Stocks (via unified symbols)
-        'AAPL': 'Apple Inc.',
-        'MSFT': 'Microsoft',
-        'TSLA': 'Tesla',
-        'SPY': 'SPY ETF',
-        'QQQ': 'QQQ ETF',
-    }
-    
-    # Databento REST API base URL
-    API_BASE_URL = "https://api.databento.com/v0"
+    # Databento supports these major symbols
+    DEFAULT_SYMBOLS = [
+        "ES",      # E-mini S&P 500 Futures
+        "MES",     # Micro E-mini S&P 500 Futures
+        "NQ",      # E-mini Nasdaq-100 Futures
+        "YM",      # E-mini Dow Jones Futures
+        "RTY",     # E-mini Russell 2000 Futures
+        "GC",      # Gold Futures
+        "CL",      # Crude Oil Futures
+        "NaturalGas",  # Natural Gas Futures
+        "VIX",     # Volatility Index
+        "AAPL",    # Apple (equities)
+        "MSFT",    # Microsoft
+        "GOOGL",   # Google
+        "BTC",     # Bitcoin
+        "ETH",     # Ethereum
+    ]
     
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        timeout: int = 30,
-        max_requests: int = 50,  # Databento tier-based (varies by subscription)
-        period_seconds: float = 60.0,
-        symbols: Optional[Dict[str, str]] = None,
-    ):
-        """
-        Initialize Databento data provider.
-        
-        Args:
-            api_key: Databento API key (required for real API calls)
-            timeout: HTTP request timeout in seconds
-            max_requests: API request rate limit per period
-                Databento tier limits vary; 50 is a reasonable default
-            period_seconds: Rate limit period in seconds
-            symbols: Custom symbol dictionary; uses DEFAULT_SYMBOLS if not provided
-        
-        Notes:
-            - API key can also be set via DATABENTO_API_KEY environment variable
-            - Stub mode (current) doesn't require valid API key
-            - Databento uses a unified symbol scheme across asset classes
-        """
-        super().__init__(
-            name="DatabentoDataProvider",
-            max_requests=max_requests,
-            period_seconds=period_seconds
-        )
+        api_key: str = "",
+        client: str = "",
+        dataset: str = "GLBX",
+        base_url: str = "https://api.databento.com",
+        seed: int = 42,
+        requests_per_second: float = 10.0,
+    ) -> None:
+        """Initialize the Databento provider."""
+        super().__init__()
         
         self.api_key = api_key
-        self.timeout = timeout
-        self.symbols = symbols or self.DEFAULT_SYMBOLS.copy()
+        self.client = client
+        self.dataset = dataset
+        self.base_url = base_url
+        self.seed = seed
+        self.rng = np.random.RandomState(seed)
         
-        # HTTP session (TODO: actual requests session)
-        self._session = None
+        # Rate limiting (Databento is generally generous with rates)
+        self.rate_limiter = RateLimiter(
+            requests_per_second=requests_per_second,
+            burst_size=5,
+        )
+        self.backoff = ExponentialBackoff(
+            initial_delay=0.1,
+            max_delay=60.0,
+            max_retries=5,
+        )
         
-        # Mock provider for stub implementation
-        self._mock_provider = MockProvider(seed=44)
+        # Connection state
+        self._db_client = None
+        self._supported_symbols = self.DEFAULT_SYMBOLS.copy()
     
-    @retry_with_backoff(max_retries=3, base_delay=1.0)
     def authenticate(self) -> None:
         """
-        Authenticate with Databento.
+        Authenticate with Databento using API key and client ID.
         
-        Validates the API key by making a test request to Databento.
-        Currently stubbed to always succeed; actual implementation will
-        validate API key against Databento's auth endpoint.
+        TODO: Full implementation
+        - Validate API key and client ID format
+        - Test connection with /v0/status or similar endpoint
+        - Verify subscription access to required datasets
+        - List available symbols and subscriptions
         
-        Raises:
-            AuthenticationError: If API key is invalid or missing
-            ConnectionError: If unable to reach Databento API
+        Current behavior: Raises NotImplementedError with credential structure.
         
-        TODO:
-            - Import requests library
-            - Make test API call to validate credentials
-            - Handle API key from environment variable
-            - Implement connection pooling
+        Raises
+        ------
+        AuthenticationError
+            If API key/client is invalid or connection fails
+        ConfigurationError
+            If required configuration is missing
         """
-        logger.info("Authenticating with Databento")
+        logger.info(f"DatabentoDataProvider: Authenticating with {self.base_url}")
+        
+        # Credential structure for future implementation
+        credentials = {
+            "api_key": self.api_key[:10] + "..." if self.api_key else None,
+            "client": self.client,
+            "dataset": self.dataset,
+            "base_url": self.base_url,
+        }
         
         if not self.api_key:
-            logger.warning("No API key provided; using stub mode (mock data)")
+            raise ConfigurationError(
+                "api_key is required for Databento authentication"
+            )
         
-        # TODO: Actual Databento authentication
-        # This is a stub implementation
-        try:
-            # In real implementation:
-            # import requests
-            # self._session = requests.Session()
-            # self._session.headers.update({'Authorization': f'Bearer {self.api_key}'})
-            # response = self._session.get(
-            #     f"{self.API_BASE_URL}/metadata/symbols",
-            #     timeout=self.timeout,
-            #     params={"limit": 1}
-            # )
-            # response.raise_for_status()
-            
-            logger.info("Databento stub authentication successful (mock mode)")
-            self._authenticated = True
-            self._mock_provider.authenticate()
-        except Exception as e:
-            logger.error(f"Databento authentication failed: {str(e)}")
-            raise AuthenticationError(
-                f"Failed to authenticate with Databento: {str(e)}",
-                provider="Databento"
-            ) from e
+        if not self.client:
+            raise ConfigurationError(
+                "client is required for Databento authentication"
+            )
+        
+        # TODO: Implement actual Databento authentication
+        # import databento
+        # try:
+        #     self._db_client = databento.Historical(key=self.api_key)
+        #     # Verify connection by listing available symbols
+        #     symbols = self._db_client.get_symbols(dataset=self.dataset)
+        # except Exception as e:
+        #     raise AuthenticationError(f"Failed to authenticate with Databento: {e}")
+        
+        logger.debug(f"Databento credentials structure: {credentials}")
+        logger.warning(
+            "DatabentoDataProvider.authenticate(): Full implementation pending. "
+            "Currently using stub with synthetic data."
+        )
+        
+        self._authenticated = True
     
-    @retry_with_backoff(max_retries=2, base_delay=0.5)
+    def disconnect(self) -> None:
+        """
+        Close the connection to Databento.
+        
+        TODO: Implement actual disconnection logic
+        """
+        if self._db_client:
+            try:
+                # TODO: self._db_client.close()
+                logger.info("Disconnected from Databento")
+            except Exception as e:
+                logger.error(f"Error disconnecting from Databento: {e}")
+        
+        self._authenticated = False
+    
     def fetch_ohlcv(
         self,
         symbol: str,
         start_date: datetime,
         end_date: datetime,
-        timeframe: str = "1D"
+        timeframe: str,
     ) -> pd.DataFrame:
         """
-        Fetch OHLCV data from Databento.
+        Fetch OHLCV data for a symbol from Databento (stub returns synthetic data).
         
-        Currently returns synthetic mock data. Actual implementation will:
-        - Query Databento /timeseries endpoint with 'ohlcv' schema
-        - Handle Databento's binary DBN format
-        - Decode and parse efficiently
-        - Return standardized schema
+        TODO: Full implementation
+        - Validate symbol against available symbols for the dataset
+        - Translate timeframe to Databento format (Databento uses numeric/nanosecond intervals)
+        - Use Databento Historical API to fetch OHLCV data
+        - Handle pagination automatically (Databento returns batches)
+        - Convert Databento timestamp format to UTC
+        - Support different record types (trades, quotes, ohlcv, etc.)
         
-        Args:
-            symbol: Security symbol (e.g., 'ES', 'AAPL')
-            start_date: Range start (inclusive)
-            end_date: Range end (inclusive)
-            timeframe: Aggregation interval ('1M', '5M', '15M', '1H', '1D', '1W')
+        Currently returns synthetic data matching the standardized schema.
         
-        Returns:
-            DataFrame with OHLCV data in standard schema
+        Databento API: Historical.get_range() for OHLCV data
         
-        Raises:
-            AuthenticationError: If not authenticated
-            DataNotAvailableError: If symbol/timeframe not available
-            ValidationError: If parameters invalid
-            RateLimitError: If Databento rate limit exceeded
+        Parameters
+        ----------
+        symbol : str
+            Symbol/instrument (e.g., "ES", "AAPL", "BTC")
+        start_date : datetime
+            Start date (inclusive)
+        end_date : datetime
+            End date (inclusive)
+        timeframe : str
+            Aggregation interval ("1m", "5m", "1H", "1D", etc.)
         
-        Notes:
-            - Databento supports tick, trade bar, and OHLCV schemas
-            - Data is efficient binary format but decoded to DataFrame
-            - Supports both historical and streaming endpoints
+        Returns
+        -------
+        pd.DataFrame
+            OHLCV data in standardized schema
         
-        TODO:
-            - Implement actual Databento API calls
-            - Parse DBN binary format efficiently
-            - Support streaming for real-time data
-            - Handle Databento's data versioning
-            - Implement compression for large downloads
+        Raises
+        ------
+        AuthenticationError
+            If not authenticated
+        DataNotAvailableError
+            If symbol is not supported or no data available
+        ValidationError
+            If date range is invalid
+        RateLimitError
+            If Databento API rate limits are exceeded
         """
         if not self._authenticated:
             raise AuthenticationError(
-                "Not authenticated. Call authenticate() first.",
-                provider="Databento"
+                "Not authenticated. Call authenticate() first."
             )
         
-        if symbol not in self.symbols:
-            raise ValidationError(
-                f"Symbol '{symbol}' not supported",
-                field="symbol",
-                value=symbol
-            )
-        
-        if start_date > end_date:
-            raise ValidationError("start_date must be <= end_date")
-        
-        logger.info(f"Fetching {symbol} OHLCV data: {start_date} to {end_date} ({timeframe})")
-        
-        # Check and enforce rate limit
-        self.check_rate_limit()
-        
-        try:
-            # TODO: Replace with actual Databento API call
-            # Real implementation would call:
-            # response = self._session.get(
-            #     f"{self.API_BASE_URL}/timeseries",
-            #     params={
-            #         "symbols": symbol,
-            #         "schema": "ohlcv",
-            #         "start": start_date.isoformat(),
-            #         "end": end_date.isoformat(),
-            #     },
-            #     timeout=self.timeout
-            # )
-            # Parse DBN binary response
-            
-            # Stub: use mock provider to generate synthetic data
-            df = self._mock_provider.fetch_ohlcv(symbol, start_date, end_date, timeframe)
-            
-            # Record the request for rate limiting
-            self.record_api_request()
-            
-            logger.info(f"Successfully fetched {len(df)} bars for {symbol}")
-            return df
-        
-        except ValidationError:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to fetch {symbol} OHLCV data: {str(e)}")
+        if symbol not in self._supported_symbols:
             raise DataNotAvailableError(
-                f"Failed to fetch data for {symbol}: {str(e)}",
-                symbol=symbol,
-                start_date=start_date,
-                end_date=end_date
-            ) from e
+                f"Symbol {symbol} not supported by Databento"
+            )
+        
+        if end_date < start_date:
+            raise ValidationError("end_date must be after start_date")
+        
+        # Apply rate limiting
+        self.rate_limiter.wait_if_needed()
+        
+        logger.info(
+            f"Fetching {symbol} {timeframe} data from {start_date} to {end_date}"
+        )
+        
+        # TODO: Implement actual API call
+        # timeframe_ns = self._timeframe_to_nanoseconds(timeframe)
+        # records = self._db_client.get_range(
+        #     dataset=self.dataset,
+        #     symbols=[symbol],
+        #     date_range=f"{start_date:%Y%m%d}-{end_date:%Y%m%d}",
+        #     record_type="ohlcv",
+        #     timeframe=timeframe_ns,
+        # )
+        
+        # For now, return synthetic data
+        return self._generate_synthetic_data(symbol, start_date, end_date, timeframe)
     
     def get_available_symbols(self) -> List[str]:
         """
         Get list of available symbols from Databento.
         
-        Currently returns a fixed list. Actual implementation will query
-        Databento's metadata endpoint and cache results.
+        TODO: Full implementation
+        - Query /v0/instruments or similar endpoint
+        - Filter by dataset and asset class
+        - Cache results with appropriate TTL
+        - Support paging through large symbol lists
         
-        Returns:
-            List of supported symbol strings
+        Currently returns hardcoded list of common symbols.
         
-        TODO:
-            - Query Databento /metadata/symbols endpoint
-            - Cache results locally with TTL
-            - Support filtering by asset class
-            - Handle symbol aliasing
+        Returns
+        -------
+        List[str]
+            List of supported symbols
+        
+        Raises
+        ------
+        AuthenticationError
+            If not authenticated
         """
-        logger.debug(f"Available symbols: {list(self.symbols.keys())}")
-        return list(self.symbols.keys())
+        if not self._authenticated:
+            raise AuthenticationError(
+                "Not authenticated. Call authenticate() first."
+            )
+        
+        logger.debug(f"Available symbols: {self._supported_symbols}")
+        return self._supported_symbols.copy()
     
-    def get_contract_details(self, symbol: str) -> Dict[str, Any]:
+    def _timeframe_to_nanoseconds(self, timeframe: str) -> int:
         """
-        Retrieve detailed information about a contract/security.
+        Convert timeframe string to Databento nanosecond interval.
         
-        Returns metadata about a symbol including asset class, exchange,
-        multiplier (for futures), etc.
+        Databento uses nanosecond intervals internally. This is a helper
+        for future implementation.
         
-        Args:
-            symbol: Symbol to get details for
+        Parameters
+        ----------
+        timeframe : str
+            Timeframe string (e.g., "5m", "1H", "1D")
         
-        Returns:
-            Dictionary with contract metadata
-        
-        Raises:
-            ValidationError: If symbol not found
-        
-        TODO:
-            - Query Databento /metadata/symbols/{symbol} endpoint
-            - Cache results locally
-            - Return full contract specification
+        Returns
+        -------
+        int
+            Nanosecond interval
         """
-        if symbol not in self.symbols:
-            raise ValidationError(f"Symbol '{symbol}' not found", field="symbol")
-        
-        # Stub implementation - return basic details
-        contract_details = {
-            'symbol': symbol,
-            'name': self.symbols[symbol],
-            'exchange': self._get_exchange_for_symbol(symbol),
-            'asset_class': self._get_asset_class_for_symbol(symbol),
-            'active': True,
+        # TODO: Implement actual conversion
+        conversions = {
+            "1m": 60 * 10**9,
+            "5m": 5 * 60 * 10**9,
+            "15m": 15 * 60 * 10**9,
+            "30m": 30 * 60 * 10**9,
+            "60m": 60 * 60 * 10**9,
+            "1H": 60 * 60 * 10**9,
+            "1D": 24 * 60 * 60 * 10**9,
+            "D": 24 * 60 * 60 * 10**9,
+            "1W": 7 * 24 * 60 * 60 * 10**9,
+            "1M": 30 * 24 * 60 * 60 * 10**9,
         }
-        
-        # Add multiplier for futures
-        if contract_details['asset_class'] == 'FUTURE':
-            contract_details['multiplier'] = self._get_multiplier_for_symbol(symbol)
-        
-        logger.debug(f"Contract details for {symbol}: {contract_details}")
-        return contract_details
+        return conversions.get(timeframe, 24 * 60 * 60 * 10**9)
     
-    def _get_exchange_for_symbol(self, symbol: str) -> str:
-        """Get exchange for a symbol."""
-        exchanges = {
-            'ES': 'CME', 'MES': 'CME', 'NQ': 'CME', 'YM': 'CME', 'RTY': 'CME',
-            'CL': 'NYMEX', 'GC': 'COMEX', 'SIL': 'COMEX',
-            'AAPL': 'NASDAQ', 'MSFT': 'NASDAQ', 'TSLA': 'NASDAQ',
-            'SPY': 'ARCA', 'QQQ': 'NASDAQ'
-        }
-        return exchanges.get(symbol, 'UNKNOWN')
-    
-    def _get_asset_class_for_symbol(self, symbol: str) -> str:
-        """Get asset class for a symbol."""
-        futures = {'ES', 'MES', 'NQ', 'YM', 'RTY', 'CL', 'GC', 'SIL'}
-        stocks = {'AAPL', 'MSFT', 'TSLA', 'SPY', 'QQQ'}
-        
-        if symbol in futures:
-            return 'FUTURE'
-        elif symbol in stocks:
-            return 'EQUITY'
-        return 'UNKNOWN'
-    
-    def _get_multiplier_for_symbol(self, symbol: str) -> int:
-        """Get contract multiplier for a symbol."""
-        multipliers = {
-            'ES': 50, 'MES': 5, 'NQ': 100, 'YM': 5, 'RTY': 50,
-            'CL': 100, 'GC': 100, 'SIL': 5000
-        }
-        return multipliers.get(symbol, 1)
-    
-    def close(self) -> None:
+    def _generate_synthetic_data(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        timeframe: str,
+    ) -> pd.DataFrame:
         """
-        Close HTTP session and cleanup resources.
+        Generate synthetic OHLCV data for testing.
         
-        TODO: Implement actual session cleanup
+        This is a temporary implementation that returns realistic mock data.
+        Will be removed once actual API integration is complete.
+        
+        Parameters
+        ----------
+        symbol : str
+            Symbol to generate data for
+        start_date : datetime
+            Start date
+        end_date : datetime
+            End date
+        timeframe : str
+            Aggregation interval
+        
+        Returns
+        -------
+        pd.DataFrame
+            Synthetic OHLCV data
         """
-        if self._session:
-            try:
-                # self._session.close()
-                logger.info("HTTP session closed")
-            except Exception as e:
-                logger.error(f"Error closing session: {str(e)}")
+        # Generate trading dates
+        all_dates = pd.bdate_range(start=start_date, end=end_date, freq="B")
         
-        self._authenticated = False
-    
-    def __del__(self):
-        """Ensure session is closed when object is destroyed."""
-        self.close()
+        if len(all_dates) == 0:
+            return pd.DataFrame(
+                columns=["open", "high", "low", "close", "volume"],
+                index=pd.DatetimeIndex([], name="timestamp", tz="UTC"),
+            )
+        
+        n = len(all_dates)
+        
+        # Price baseline depends on symbol
+        price_map = {
+            "ES": 4000.0,
+            "MES": 4000.0,
+            "NQ": 12000.0,
+            "YM": 33000.0,
+            "RTY": 1800.0,
+            "GC": 1800.0,
+            "CL": 75.0,
+            "NaturalGas": 3.0,
+            "VIX": 18.0,
+            "AAPL": 150.0,
+            "MSFT": 300.0,
+            "GOOGL": 2500.0,
+            "BTC": 40000.0,
+            "ETH": 2500.0,
+        }
+        start_price = price_map.get(symbol, 100.0)
+        
+        # Generate realistic price movements
+        returns = self.rng.normal(0.0005, 0.015, n)
+        close_prices = start_price * np.exp(np.cumsum(returns))
+        
+        # Generate OHLC
+        opens = close_prices + self.rng.normal(0, 5, n)
+        highs = np.maximum(opens, close_prices) + np.abs(
+            self.rng.normal(0, 10, n)
+        )
+        lows = np.minimum(opens, close_prices) - np.abs(
+            self.rng.normal(0, 10, n)
+        )
+        
+        # Generate volume
+        volume_base = 500000 if symbol in ["ES", "MES"] else 100000
+        volumes = volume_base + self.rng.randint(-100000, 100000, n)
+        volumes = np.maximum(volumes, 1000).astype("int64")
+        
+        # Create DataFrame
+        df = pd.DataFrame(
+            {
+                "open": opens.astype("float64"),
+                "high": highs.astype("float64"),
+                "low": lows.astype("float64"),
+                "close": close_prices.astype("float64"),
+                "volume": volumes,
+            },
+            index=pd.DatetimeIndex(all_dates, name="timestamp"),
+        )
+        
+        df.index = df.index.tz_localize("UTC")
+        
+        return df

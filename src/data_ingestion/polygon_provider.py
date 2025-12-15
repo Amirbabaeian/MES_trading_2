@@ -1,366 +1,428 @@
 """
 Polygon.io data provider adapter.
 
-This module implements a concrete adapter for Polygon.io that conforms
-to the DataProvider interface. Currently implemented as a stub that returns
-synthetic data; actual API integration will be added once Polygon is selected
-as the data vendor.
+This module provides a stub implementation of the DataProvider interface for
+Polygon.io REST API. It currently returns synthetic mock data matching the
+standardized schema. Full implementation will be completed once Polygon.io
+is selected as the primary vendor.
 
-The adapter handles:
-- Authentication via API key
-- OHLCV data fetching for stocks, options, forex, and crypto
-- Symbol/ticker management
-- Rate limiting and pagination
-- Data normalization from Polygon's response format
+Polygon.io provides aggregated market data for stocks, options, forex, and
+crypto. The API uses RESTful endpoints and requires an API key for authentication.
+
+TODO: Complete implementation with actual Polygon.io API integration
+- Implement real authentication with API key validation
+- Implement actual API calls to /v1/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}
+- Handle Polygon's rate limits (5 requests per minute for free, higher for paid)
+- Implement pagination for large result sets
+- Handle data types and conversion (Polygon uses different field names)
+- Add support for multiple asset classes (stocks, options, forex, crypto)
 """
 
 import logging
-from typing import List, Optional, Dict, Any
 from datetime import datetime
-import pandas as pd
+from typing import List, Dict, Any, Optional
 
-from .base_provider import DataProvider
-from .mock_provider import MockProvider
-from .rate_limiter import RateLimiterMixin, retry_with_backoff
-from .exceptions import (
+import pandas as pd
+import numpy as np
+
+from src.data_ingestion.base_provider import DataProvider
+from src.data_ingestion.exceptions import (
     AuthenticationError,
     DataNotAvailableError,
     ValidationError,
+    ConfigurationError,
     RateLimitError,
 )
+from src.data_ingestion.rate_limiter import RateLimiter, ExponentialBackoff
 
 logger = logging.getLogger(__name__)
 
 
-class PolygonDataProvider(RateLimiterMixin, DataProvider):
+class PolygonDataProvider(DataProvider):
     """
-    Polygon.io data provider adapter.
+    Polygon.io data provider adapter (stub implementation).
     
-    This adapter implements the DataProvider interface for Polygon.io,
-    providing access to stocks, options, forex, and crypto asset classes.
+    This is a stub implementation that returns synthetic OHLCV data matching
+    the standardized schema. It serves as a template for full implementation
+    once Polygon.io is selected.
     
-    Current Implementation:
-    - Stub implementation using MockProvider for synthetic data
-    - Configuration structure ready for actual API integration
-    - Rate limiting framework (Polygon has 5 API calls per minute on free tier)
-    - Error handling for common Polygon scenarios
+    Polygon.io provides:
+    - Stocks: US equities (NYSE, NASDAQ, etc.)
+    - Options: Stock options data
+    - Forex: Foreign exchange pairs
+    - Crypto: Cryptocurrency data
     
-    API Rate Limits (by plan):
-    - Free: 5 requests/minute
-    - Starter: 30 requests/minute
-    - Professional: 600 requests/minute
-    
-    Future Work (TODO):
-    - Replace mock data with actual Polygon API calls
-    - Implement REST client for Polygon /v1/open-close and /v2/aggs endpoints
-    - Handle response pagination
-    - Support multiple asset classes (stocks, options, forex, crypto)
-    - Implement data format conversion (Polygon JSON → standard schema)
-    - Handle dividend and split adjustments for stocks
-    
-    Supported Symbols (Stock Focus):
-    - AAPL, MSFT, TSLA, GOOGL, AMZN (stocks)
-    - SPY, QQQ, DIA, IWM (ETFs)
-    
-    Example:
-        >>> provider = PolygonDataProvider(api_key='YOUR_POLYGON_KEY')
-        >>> provider.authenticate()
-        >>> df = provider.fetch_ohlcv(
-        ...     symbol='AAPL',
-        ...     start_date=datetime(2024, 1, 1),
-        ...     end_date=datetime(2024, 12, 31),
-        ...     timeframe='1D'
-        ... )
+    Parameters
+    ----------
+    api_key : str
+        Polygon.io API key for authentication
+    base_url : str
+        API base URL (default: "https://api.polygon.io")
+    timeout : float
+        Request timeout in seconds (default: 30)
+    seed : int
+        Random seed for synthetic data (default: 42)
+    requests_per_second : float
+        Rate limit: requests per second (default: 4)
     """
     
-    # Default supported symbols (stocks/ETFs focus)
-    DEFAULT_SYMBOLS = {
-        'AAPL': 'Apple Inc.',
-        'MSFT': 'Microsoft Corporation',
-        'TSLA': 'Tesla Inc.',
-        'GOOGL': 'Alphabet Inc. (Google)',
-        'AMZN': 'Amazon.com Inc.',
-        'META': 'Meta Platforms Inc. (Facebook)',
-        'NVDA': 'NVIDIA Corporation',
-        'JPM': 'JPMorgan Chase & Co.',
-        'JNJ': 'Johnson & Johnson',
-        'V': 'Visa Inc.',
-        'SPY': 'SPDR S&P 500 ETF Trust',
-        'QQQ': 'Invesco QQQ Trust Series 1',
-        'DIA': 'SPDR Dow Jones Industrial Average ETF',
-        'IWM': 'iShares Russell 2000 ETF',
-        'EEM': 'iShares MSCI Emerging Markets ETF',
-    }
-    
-    # Polygon REST API base URL
-    API_BASE_URL = "https://api.polygon.io/v1"
+    # Polygon supports hundreds of symbols; these are common ones
+    DEFAULT_SYMBOLS = [
+        "ES",      # E-mini S&P 500 (via SPY equivalence)
+        "MES",     # Micro E-mini S&P 500
+        "NQ",      # E-mini Nasdaq (via QQQ equivalence)
+        "YM",      # E-mini Dow (via DIA equivalence)
+        "VIX",     # Volatility index
+        "SPY",     # SPDR S&P 500 ETF
+        "QQQ",     # Invesco QQQ Trust
+        "DIA",     # SPDR Dow Jones Industrial ETF
+        "AAPL",    # Apple
+        "MSFT",    # Microsoft
+        "GOOGL",   # Google/Alphabet
+        "AMZN",    # Amazon
+        "TSLA",    # Tesla
+        "META",    # Meta Platforms
+    ]
     
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        timeout: int = 30,
-        max_requests: int = 5,  # Free tier default
-        period_seconds: float = 60.0,
-        symbols: Optional[Dict[str, str]] = None,
-    ):
-        """
-        Initialize Polygon data provider.
-        
-        Args:
-            api_key: Polygon.io API key (required for real API calls)
-            timeout: HTTP request timeout in seconds
-            max_requests: API request rate limit per period
-                - 5 (Free tier, default)
-                - 30 (Starter tier)
-                - 600 (Professional tier)
-            period_seconds: Rate limit period in seconds
-            symbols: Custom symbol dictionary; uses DEFAULT_SYMBOLS if not provided
-        
-        Notes:
-            - API key can also be set via POLYGON_API_KEY environment variable
-            - Stub mode (current) doesn't require valid API key
-        """
-        super().__init__(
-            name="PolygonDataProvider",
-            max_requests=max_requests,
-            period_seconds=period_seconds
-        )
+        api_key: str = "",
+        base_url: str = "https://api.polygon.io",
+        timeout: float = 30.0,
+        seed: int = 42,
+        requests_per_second: float = 4.0,
+    ) -> None:
+        """Initialize the Polygon.io provider."""
+        super().__init__()
         
         self.api_key = api_key
+        self.base_url = base_url
         self.timeout = timeout
-        self.symbols = symbols or self.DEFAULT_SYMBOLS.copy()
+        self.seed = seed
+        self.rng = np.random.RandomState(seed)
         
-        # HTTP session (TODO: actual requests session)
+        # Rate limiting (Polygon free tier: 5 req/min, paid tiers higher)
+        self.rate_limiter = RateLimiter(
+            requests_per_second=requests_per_second,
+            burst_size=3,
+        )
+        self.backoff = ExponentialBackoff(
+            initial_delay=0.5,
+            max_delay=120.0,  # Longer for Polygon's 429 errors
+            max_retries=5,
+        )
+        
+        # Connection state
         self._session = None
-        
-        # Mock provider for stub implementation
-        self._mock_provider = MockProvider(seed=43)
+        self._supported_symbols = self.DEFAULT_SYMBOLS.copy()
     
-    @retry_with_backoff(max_retries=2, base_delay=1.0)
     def authenticate(self) -> None:
         """
-        Authenticate with Polygon.io.
+        Authenticate with Polygon.io using API key.
         
-        Validates the API key by making a test request to Polygon.
-        Currently stubbed to always succeed; actual implementation will
-        validate API key against Polygon's auth endpoint.
+        TODO: Full implementation
+        - Validate API key format
+        - Test connection with a simple API call (e.g., /v1/marketstatus)
+        - Determine tier level (free vs. paid) to set rate limits
+        - Verify data access permissions
         
-        Raises:
-            AuthenticationError: If API key is invalid or missing
-            ConnectionError: If unable to reach Polygon API
+        Current behavior: Raises NotImplementedError with credential structure.
         
-        TODO:
-            - Import requests library
-            - Make test API call to validate credentials
-            - Handle API key from environment variable
-            - Implement exponential backoff for auth retries
+        Raises
+        ------
+        AuthenticationError
+            If API key is invalid or API is unreachable
+        ConfigurationError
+            If API key is not provided
         """
-        logger.info("Authenticating with Polygon.io")
+        logger.info(f"PolygonDataProvider: Authenticating with {self.base_url}")
+        
+        # Credential structure for future implementation
+        credentials = {
+            "api_key": self.api_key[:10] + "..." if self.api_key else None,
+            "base_url": self.base_url,
+            "timeout": self.timeout,
+        }
         
         if not self.api_key:
-            logger.warning("No API key provided; using stub mode (mock data)")
+            raise ConfigurationError(
+                "api_key is required for Polygon.io authentication"
+            )
         
-        # TODO: Actual Polygon authentication
-        # This is a stub implementation
-        try:
-            # In real implementation:
-            # import requests
-            # self._session = requests.Session()
-            # response = self._session.get(
-            #     f"{self.API_BASE_URL}/reference/tickers?apiKey={self.api_key}",
-            #     timeout=self.timeout,
-            #     params={"limit": 1}
-            # )
-            # response.raise_for_status()
-            
-            logger.info("Polygon stub authentication successful (mock mode)")
-            self._authenticated = True
-            self._mock_provider.authenticate()
-        except Exception as e:
-            logger.error(f"Polygon authentication failed: {str(e)}")
-            raise AuthenticationError(
-                f"Failed to authenticate with Polygon.io: {str(e)}",
-                provider="Polygon.io"
-            ) from e
+        # TODO: Implement actual API validation
+        # import requests
+        # try:
+        #     response = requests.get(
+        #         f"{self.base_url}/v1/marketstatus",
+        #         params={"apikey": self.api_key},
+        #         timeout=self.timeout,
+        #     )
+        #     if response.status_code == 401:
+        #         raise AuthenticationError("Invalid Polygon.io API key")
+        #     response.raise_for_status()
+        #     self._session = requests.Session()
+        #     self._session.params = {"apikey": self.api_key}
+        # except Exception as e:
+        #     raise AuthenticationError(f"Failed to authenticate with Polygon.io: {e}")
+        
+        logger.debug(f"Polygon.io credentials structure: {credentials}")
+        logger.warning(
+            "PolygonDataProvider.authenticate(): Full implementation pending. "
+            "Currently using stub with synthetic data."
+        )
+        
+        self._authenticated = True
     
-    @retry_with_backoff(max_retries=2, base_delay=0.5)
+    def disconnect(self) -> None:
+        """
+        Close the connection to Polygon.io.
+        
+        TODO: Implement actual disconnection logic
+        """
+        if self._session:
+            try:
+                # TODO: self._session.close()
+                logger.info("Disconnected from Polygon.io")
+            except Exception as e:
+                logger.error(f"Error disconnecting from Polygon.io: {e}")
+        
+        self._authenticated = False
+    
     def fetch_ohlcv(
         self,
         symbol: str,
         start_date: datetime,
         end_date: datetime,
-        timeframe: str = "1D"
+        timeframe: str,
     ) -> pd.DataFrame:
         """
-        Fetch OHLCV data from Polygon.io.
+        Fetch OHLCV data for a symbol from Polygon.io (stub returns synthetic data).
         
-        Currently returns synthetic mock data. Actual implementation will:
-        - Query Polygon /v2/aggs/ticker endpoint
-        - Handle pagination for large date ranges
-        - Convert Polygon's JSON response to standard schema
-        - Apply stock split/dividend adjustments
+        TODO: Full implementation
+        - Translate timeframe format to Polygon API format (1, 5, 15, 30, 60, D, W, M)
+        - Implement pagination via "limit" and "sort" parameters
+        - Handle Polygon's API response format (o, h, l, c, v, vw fields)
+        - Implement retry logic for rate limiting (429 responses)
+        - Handle data gaps and missing trading days
         
-        Args:
-            symbol: Stock symbol/ticker (e.g., 'AAPL', 'SPY')
-            start_date: Range start (inclusive)
-            end_date: Range end (inclusive)
-            timeframe: Aggregation timeframe ('1M', '5M', '15M', '30M', '1H', '1D', '1W', '1MO')
+        Currently returns synthetic data matching the standardized schema.
         
-        Returns:
-            DataFrame with OHLCV data in standard schema
+        Polygon API endpoint: /v1/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}
         
-        Raises:
-            AuthenticationError: If not authenticated
-            DataNotAvailableError: If symbol/timeframe not available
-            ValidationError: If parameters invalid
-            RateLimitError: If Polygon rate limit exceeded
+        Parameters
+        ----------
+        symbol : str
+            Stock symbol (e.g., "AAPL", "SPY")
+        start_date : datetime
+            Start date (inclusive)
+        end_date : datetime
+            End date (inclusive)
+        timeframe : str
+            Aggregation interval ("1D", "1H", "5m", "W", "M", etc.)
         
-        Notes:
-            - Polygon's /v2/aggs endpoint requires pagination for large ranges
-            - Data is adjusted for splits/dividends by default
-            - Timeframe format: "1" + unit (minute, hour, day, week, month, quarter, year)
+        Returns
+        -------
+        pd.DataFrame
+            OHLCV data in standardized schema
         
-        TODO:
-            - Implement actual Polygon API pagination
-            - Convert Polygon response format to standard schema
-            - Handle multiple pagination cursors
-            - Support intraday timeframes
-            - Cache API responses
+        Raises
+        ------
+        AuthenticationError
+            If not authenticated
+        DataNotAvailableError
+            If symbol is not supported or no data available
+        ValidationError
+            If date range is invalid
+        RateLimitError
+            If Polygon API rate limits are exceeded
         """
         if not self._authenticated:
             raise AuthenticationError(
-                "Not authenticated. Call authenticate() first.",
-                provider="Polygon.io"
+                "Not authenticated. Call authenticate() first."
             )
         
-        if symbol not in self.symbols:
-            raise ValidationError(
-                f"Symbol '{symbol}' not supported",
-                field="symbol",
-                value=symbol
-            )
-        
-        if start_date > end_date:
-            raise ValidationError("start_date must be <= end_date")
-        
-        logger.info(f"Fetching {symbol} OHLCV data: {start_date} to {end_date} ({timeframe})")
-        
-        # Check and enforce rate limit
-        self.check_rate_limit()
-        
-        try:
-            # TODO: Replace with actual Polygon API call
-            # Real implementation would call:
-            # response = self._session.get(
-            #     f"{self.API_BASE_URL}/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}",
-            #     params={"apiKey": self.api_key},
-            #     timeout=self.timeout
-            # )
-            # Parse response and handle pagination
-            
-            # Stub: use mock provider to generate synthetic data
-            df = self._mock_provider.fetch_ohlcv(symbol, start_date, end_date, timeframe)
-            
-            # Record the request for rate limiting
-            self.record_api_request()
-            
-            logger.info(f"Successfully fetched {len(df)} bars for {symbol}")
-            return df
-        
-        except ValidationError:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to fetch {symbol} OHLCV data: {str(e)}")
+        if symbol not in self._supported_symbols:
             raise DataNotAvailableError(
-                f"Failed to fetch data for {symbol}: {str(e)}",
-                symbol=symbol,
-                start_date=start_date,
-                end_date=end_date
-            ) from e
+                f"Symbol {symbol} not supported by Polygon.io"
+            )
+        
+        if end_date < start_date:
+            raise ValidationError("end_date must be after start_date")
+        
+        # Apply rate limiting
+        self.rate_limiter.wait_if_needed()
+        
+        logger.info(
+            f"Fetching {symbol} {timeframe} data from {start_date} to {end_date}"
+        )
+        
+        # TODO: Implement actual API call
+        # multiplier, timespan = self._parse_timeframe(timeframe)
+        # url = f"{self.base_url}/v1/aggs/ticker/{symbol}/range/{multiplier}/{timespan}/{start_date:%Y-%m-%d}/{end_date:%Y-%m-%d}"
+        # params = {"apikey": self.api_key, "sort": "asc", "limit": 50000}
+        # response = self._session.get(url, params=params, timeout=self.timeout)
+        # if response.status_code == 429:
+        #     raise RateLimitError("Polygon.io rate limit exceeded")
+        # response.raise_for_status()
+        # results = response.json()["results"]
+        
+        # For now, return synthetic data
+        return self._generate_synthetic_data(symbol, start_date, end_date, timeframe)
     
     def get_available_symbols(self) -> List[str]:
         """
-        Get list of available symbols from Polygon.
+        Get list of available symbols from Polygon.io.
         
-        Currently returns a fixed list. Actual implementation will query
-        Polygon's ticker database and cache the results.
+        TODO: Full implementation
+        - Query /v1/reference/tickers endpoint
+        - Filter by active status
+        - Cache results with TTL
+        - Support paging through large result sets
         
-        Returns:
-            List of supported symbol strings
+        Currently returns hardcoded list of common symbols.
         
-        TODO:
-            - Query Polygon /v3/reference/tickers endpoint
-            - Implement local caching with TTL
-            - Filter by market (stocks, options, forex, crypto)
-            - Handle pagination for large symbol lists
-            - Regularly refresh cached list
+        Returns
+        -------
+        List[str]
+            List of supported symbols
+        
+        Raises
+        ------
+        AuthenticationError
+            If not authenticated
         """
-        logger.debug(f"Available symbols: {list(self.symbols.keys())}")
-        return list(self.symbols.keys())
+        if not self._authenticated:
+            raise AuthenticationError(
+                "Not authenticated. Call authenticate() first."
+            )
+        
+        logger.debug(f"Available symbols: {self._supported_symbols}")
+        return self._supported_symbols.copy()
     
-    def get_contract_details(self, symbol: str) -> Dict[str, Any]:
+    def _parse_timeframe(self, timeframe: str) -> tuple:
         """
-        Retrieve detailed information about a security.
+        Parse timeframe string to Polygon API format.
         
-        Returns metadata about a ticker including name, market, primary exchange,
-        currency, etc.
+        Polygon uses format: {multiplier}{timespan}
+        - timespan: minute, hour, day, week, month, quarter, year
+        - multiplier: number (e.g., "5minute", "1day")
         
-        Args:
-            symbol: Symbol to get details for
+        Parameters
+        ----------
+        timeframe : str
+            Timeframe string (e.g., "5m", "1D", "W")
         
-        Returns:
-            Dictionary with security metadata
-        
-        Raises:
-            ValidationError: If symbol not found
-        
-        TODO:
-            - Query Polygon /v3/reference/tickers/{symbol} endpoint
-            - Cache results locally
-            - Return full ticker details
+        Returns
+        -------
+        tuple
+            (multiplier, timespan) for Polygon API
         """
-        if symbol not in self.symbols:
-            raise ValidationError(f"Symbol '{symbol}' not found", field="symbol")
-        
-        # Stub implementation - return basic details
-        contract_details = {
-            'symbol': symbol,
-            'name': self.symbols[symbol],
-            'market': 'stocks',
-            'primary_exchange': self._get_exchange_for_symbol(symbol),
-            'currency': 'USD',
-            'active': True,
+        # TODO: Implement actual parsing logic
+        timeframe_map = {
+            "1m": (1, "minute"),
+            "5m": (5, "minute"),
+            "15m": (15, "minute"),
+            "30m": (30, "minute"),
+            "60m": (60, "minute"),
+            "1H": (1, "hour"),
+            "1D": (1, "day"),
+            "D": (1, "day"),
+            "1W": (1, "week"),
+            "W": (1, "week"),
+            "1M": (1, "month"),
+            "M": (1, "month"),
         }
-        
-        logger.debug(f"Security details for {symbol}: {contract_details}")
-        return contract_details
+        return timeframe_map.get(timeframe, (1, "day"))
     
-    def _get_exchange_for_symbol(self, symbol: str) -> str:
-        """Get primary exchange for a symbol."""
-        # Simplified mapping - in real implementation would query Polygon
-        exchanges = {
-            'AAPL': 'NASDAQ', 'MSFT': 'NASDAQ', 'TSLA': 'NASDAQ', 'GOOGL': 'NASDAQ',
-            'AMZN': 'NASDAQ', 'META': 'NASDAQ', 'NVDA': 'NASDAQ',
-            'JPM': 'NYSE', 'JNJ': 'NYSE', 'V': 'NYSE',
-            'SPY': 'ARCA', 'QQQ': 'NASDAQ', 'DIA': 'ARCA', 'IWM': 'ARCA', 'EEM': 'ARCA'
+    def _generate_synthetic_data(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        timeframe: str,
+    ) -> pd.DataFrame:
+        """
+        Generate synthetic OHLCV data for testing.
+        
+        This is a temporary implementation that returns realistic mock data.
+        Will be removed once actual API integration is complete.
+        
+        Parameters
+        ----------
+        symbol : str
+            Symbol to generate data for
+        start_date : datetime
+            Start date
+        end_date : datetime
+            End date
+        timeframe : str
+            Aggregation interval
+        
+        Returns
+        -------
+        pd.DataFrame
+            Synthetic OHLCV data
+        """
+        # Generate trading dates
+        all_dates = pd.bdate_range(start=start_date, end=end_date, freq="B")
+        
+        if len(all_dates) == 0:
+            return pd.DataFrame(
+                columns=["open", "high", "low", "close", "volume"],
+                index=pd.DatetimeIndex([], name="timestamp", tz="UTC"),
+            )
+        
+        n = len(all_dates)
+        
+        # Price baseline depends on symbol
+        price_map = {
+            "ES": 4000.0,
+            "MES": 4000.0,
+            "NQ": 12000.0,
+            "YM": 33000.0,
+            "VIX": 18.0,
+            "SPY": 400.0,
+            "QQQ": 300.0,
+            "DIA": 330.0,
+            "AAPL": 150.0,
+            "MSFT": 300.0,
+            "GOOGL": 2500.0,
+            "AMZN": 100.0,
+            "TSLA": 200.0,
+            "META": 250.0,
         }
-        return exchanges.get(symbol, 'UNKNOWN')
-    
-    def close(self) -> None:
-        """
-        Close HTTP session and cleanup resources.
+        start_price = price_map.get(symbol, 100.0)
         
-        TODO: Implement actual session cleanup
-        """
-        if self._session:
-            try:
-                # self._session.close()
-                logger.info("HTTP session closed")
-            except Exception as e:
-                logger.error(f"Error closing session: {str(e)}")
+        # Generate realistic price movements
+        returns = self.rng.normal(0.0005, 0.015, n)
+        close_prices = start_price * np.exp(np.cumsum(returns))
         
-        self._authenticated = False
-    
-    def __del__(self):
-        """Ensure session is closed when object is destroyed."""
-        self.close()
+        # Generate OHLC
+        opens = close_prices + self.rng.normal(0, 5, n)
+        highs = np.maximum(opens, close_prices) + np.abs(
+            self.rng.normal(0, 10, n)
+        )
+        lows = np.minimum(opens, close_prices) - np.abs(
+            self.rng.normal(0, 10, n)
+        )
+        
+        # Generate volume (lower than futures)
+        volume_base = 50000000 if symbol in ["SPY", "QQQ"] else 5000000
+        volumes = volume_base + self.rng.randint(-1000000, 1000000, n)
+        volumes = np.maximum(volumes, 100000).astype("int64")
+        
+        # Create DataFrame
+        df = pd.DataFrame(
+            {
+                "open": opens.astype("float64"),
+                "high": highs.astype("float64"),
+                "low": lows.astype("float64"),
+                "close": close_prices.astype("float64"),
+                "volume": volumes,
+            },
+            index=pd.DatetimeIndex(all_dates, name="timestamp"),
+        )
+        
+        df.index = df.index.tz_localize("UTC")
+        
+        return df

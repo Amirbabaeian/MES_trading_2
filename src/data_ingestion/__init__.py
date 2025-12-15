@@ -1,116 +1,53 @@
 """
-Data ingestion module for fetching OHLCV data from various vendors.
+Data ingestion module for market data providers.
 
-This module provides an abstract interface (DataProvider) for data vendors,
-allowing downstream code to work with different data sources without changes.
-Includes concrete implementations for multiple vendors and mock providers for testing.
+This module provides:
+- Abstract base class for data providers (DataProvider)
+- Concrete adapter implementations for specific vendors
+- Exception hierarchy for error handling
+- Rate limiting and retry utilities
 """
 
-# Base classes and interfaces
-from .base_provider import DataProvider
-
-# Exceptions
-from .exceptions import (
+from src.data_ingestion.base_provider import DataProvider
+from src.data_ingestion.exceptions import (
     DataProviderError,
     AuthenticationError,
     DataNotAvailableError,
     RateLimitError,
-    ValidationError,
-    SchemaError,
-    ConnectionError,
     PaginationError,
-    TimeoutError,
+    ConfigurationError,
+    ValidationError,
+    ConnectionError,
 )
-
-# Rate limiting and retry utilities
-from .rate_limiter import RateLimiter, RateLimiterMixin, retry_with_backoff
-
-# Mock implementations
-from .mock_provider import MockProvider, FailingMockProvider
-
-# Vendor-specific adapters
-from .ib_provider import IBDataProvider
-from .polygon_provider import PolygonDataProvider
-from .databento_provider import DatabentoDataProvider
-
-# Credential management
-from .credentials import (
-    CredentialLoader,
-    CredentialManager,
-    CredentialValidator,
-    CredentialTester,
-    SensitiveDataMasker,
-    IBCredentialValidator,
-    PolygonCredentialValidator,
-    DatabentoCredentialValidator,
-)
-
-# Advanced retry and progress utilities
-from .retry import (
-    RetryConfig,
-    retry_with_config,
-    RequestRateLimiter,
-    RetryableError,
-)
-
-# Progress tracking for resumable jobs
-from .progress import (
-    ProgressTracker,
-    ProgressState,
-)
-
-# Orchestration system for coordinated data fetching
-from .orchestrator import (
-    Orchestrator,
-    IngestionTask,
-    IngestionResult,
-    DataValidationError,
+from src.data_ingestion.mock_provider import MockDataProvider
+from src.data_ingestion.ib_provider import IBDataProvider
+from src.data_ingestion.polygon_provider import PolygonDataProvider
+from src.data_ingestion.databento_provider import DatabentoDataProvider
+from src.data_ingestion.rate_limiter import (
+    RateLimiter,
+    ExponentialBackoff,
+    retry_with_backoff,
 )
 
 __all__ = [
-    # Base class
+    # Base interface
     "DataProvider",
     # Exceptions
     "DataProviderError",
     "AuthenticationError",
     "DataNotAvailableError",
     "RateLimitError",
-    "ValidationError",
-    "SchemaError",
-    "ConnectionError",
     "PaginationError",
-    "TimeoutError",
-    # Rate limiting and retry utilities
-    "RateLimiter",
-    "RateLimiterMixin",
-    "retry_with_backoff",
-    # Advanced retry utilities
-    "RetryConfig",
-    "retry_with_config",
-    "RequestRateLimiter",
-    "RetryableError",
-    # Mock providers
-    "MockProvider",
-    "FailingMockProvider",
-    # Vendor adapters
+    "ConfigurationError",
+    "ValidationError",
+    "ConnectionError",
+    # Implementations
+    "MockDataProvider",
     "IBDataProvider",
     "PolygonDataProvider",
     "DatabentoDataProvider",
-    # Credential management
-    "CredentialLoader",
-    "CredentialManager",
-    "CredentialValidator",
-    "CredentialTester",
-    "SensitiveDataMasker",
-    "IBCredentialValidator",
-    "PolygonCredentialValidator",
-    "DatabentoCredentialValidator",
-    # Progress tracking
-    "ProgressTracker",
-    "ProgressState",
-    # Orchestration
-    "Orchestrator",
-    "IngestionTask",
-    "IngestionResult",
-    "DataValidationError",
+    # Utilities
+    "RateLimiter",
+    "ExponentialBackoff",
+    "retry_with_backoff",
 ]

@@ -1,539 +1,662 @@
 """
-Comprehensive test suite for Parquet I/O utilities.
+Comprehensive unit tests for Parquet I/O utilities.
 
-Tests cover:
-- Schema validation (strict, coerce, ignore modes)
-- Read/write operations with various configurations
-- Compression support
-- Partitioning
-- Metadata management
-- Error handling
+Tests cover schema validation, compression, metadata management,
+partitioning, and error handling.
 """
 
-import pytest
-import pandas as pd
-import numpy as np
+import unittest
+import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
-import tempfile
 import json
+import os
+
+import pandas as pd
+import numpy as np
+import pyarrow as pa
 
 from src.data_io.parquet_utils import (
-    read_parquet_with_schema,
-    write_parquet_validated,
-    read_partitioned_dataset,
-    write_features,
-    read_features,
+    ParquetIOHandler,
     read_raw_data,
     write_cleaned_data,
-    get_parquet_metadata,
-    get_parquet_schema,
-    SchemaValidator,
-    validate_compression,
+    read_features,
+    write_features,
 )
-from src.data_io.schemas import (
-    DataSchema,
-    ColumnSchema,
-    OHLCV_SCHEMA,
-    PRICE_VOLATILITY_SCHEMA,
-    get_schema,
-)
+from src.data_io.schemas import get_schema, OHLCV_SCHEMA, FEATURES_SCHEMA
 from src.data_io.metadata import MetadataManager
 from src.data_io.errors import (
+    SchemaValidationError,
     SchemaMismatchError,
-    MissingRequiredColumnError,
-    DataTypeValidationError,
+    ParquetReadError,
+    ParquetWriteError,
     CompressionError,
-    CorruptedFileError,
-    ParquetIOError,
+    PartitioningError,
 )
 
 
-# ============================================================================
-# Fixtures
-# ============================================================================
-
-@pytest.fixture
-def temp_dir():
-    """Create a temporary directory for test files."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield Path(tmpdir)
-
-
-@pytest.fixture
-def sample_ohlcv_data():
-    """Create sample OHLCV data."""
-    dates = pd.date_range("2024-01-01", periods=100, freq="1H")
-    data = {
-        "timestamp": dates,
-        "open": np.random.uniform(100, 110, 100),
-        "high": np.random.uniform(110, 120, 100),
-        "low": np.random.uniform(90, 100, 100),
-        "close": np.random.uniform(100, 110, 100),
-        "volume": np.random.randint(1000, 10000, 100),
-    }
-    return pd.DataFrame(data)
-
-
-@pytest.fixture
-def sample_features_data():
-    """Create sample features data."""
-    dates = pd.date_range("2024-01-01", periods=50, freq="1D")
-    data = {
-        "timestamp": dates,
-        "volatility_30d": np.random.uniform(0, 1, 50),
-        "volatility_60d": np.random.uniform(0, 1, 50),
-        "volatility_ratio": np.random.uniform(0.5, 2, 50),
-        "price_range_pct": np.random.uniform(0, 5, 50),
-    }
-    return pd.DataFrame(data)
-
-
-@pytest.fixture
-def sample_schema():
-    """Create a sample schema for testing."""
-    return DataSchema(
-        name="test_schema",
-        version="1.0.0",
-        description="Test schema",
-        columns=[
-            ColumnSchema("timestamp", "timestamp[ns]", nullable=False),
-            ColumnSchema("value", "double", nullable=False),
-            ColumnSchema("category", "string", nullable=True),
-        ],
-    )
-
-
-# ============================================================================
-# Tests: Basic Read/Write
-# ============================================================================
-
-class TestBasicReadWrite:
-    """Tests for basic read/write operations."""
+class TestParquetIOHandler(unittest.TestCase):
+    """Tests for ParquetIOHandler class."""
     
-    def test_write_and_read_parquet(self, temp_dir, sample_ohlcv_data):
-        """Test basic write and read of Parquet file."""
-        file_path = temp_dir / "test.parquet"
-        
-        # Write
-        write_parquet_validated(sample_ohlcv_data, file_path)
-        assert file_path.exists()
-        
-        # Read
-        df = read_parquet_with_schema(file_path)
-        assert len(df) == len(sample_ohlcv_data)
-        assert list(df.columns) == list(sample_ohlcv_data.columns)
+    def setUp(self):
+        """Set up test fixtures."""
+        self.handler = ParquetIOHandler()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.test_dir = Path(self.temp_dir.name)
     
-    def test_write_with_custom_metadata(self, temp_dir, sample_ohlcv_data):
+    def tearDown(self):
+        """Clean up test fixtures."""
+        self.temp_dir.cleanup()
+    
+    def _create_ohlcv_df(self, rows: int = 100) -> pd.DataFrame:
+        """Create a test OHLCV DataFrame."""
+        start_date = datetime(2024, 1, 1)
+        timestamps = [start_date + timedelta(hours=i) for i in range(rows)]
+        
+        return pd.DataFrame({
+            "timestamp": timestamps,
+            "asset": ["MES"] * rows,
+            "open": np.random.uniform(4500, 4600, rows),
+            "high": np.random.uniform(4600, 4700, rows),
+            "low": np.random.uniform(4400, 4500, rows),
+            "close": np.random.uniform(4500, 4600, rows),
+            "volume": np.random.randint(1000, 10000, rows),
+        })
+    
+    def _create_features_df(self, rows: int = 100) -> pd.DataFrame:
+        """Create a test features DataFrame."""
+        start_date = datetime(2024, 1, 1)
+        timestamps = [start_date + timedelta(hours=i) for i in range(rows)]
+        
+        return pd.DataFrame({
+            "timestamp": timestamps,
+            "asset": ["MES"] * rows,
+            "feature_set": ["v1"] * rows,
+            "features": [
+                {
+                    "sma_20": np.random.uniform(4500, 4600),
+                    "sma_50": np.random.uniform(4500, 4600),
+                    "rsi_14": np.random.uniform(30, 70),
+                }
+                for _ in range(rows)
+            ],
+        })
+    
+    # ===== Write Tests =====
+    
+    def test_write_parquet_basic(self):
+        """Test basic Parquet write functionality."""
+        df = self._create_ohlcv_df(50)
+        output_path = self.test_dir / "test_basic.parquet"
+        
+        self.handler.write_parquet_validated(
+            df,
+            output_path,
+            schema_name="ohlcv",
+            enforcement_mode="ignore"
+        )
+        
+        self.assertTrue(output_path.exists())
+        self.assertGreater(output_path.stat().st_size, 0)
+    
+    def test_write_with_schema_validation(self):
+        """Test write with schema validation."""
+        df = self._create_ohlcv_df(50)
+        output_path = self.test_dir / "test_with_schema.parquet"
+        
+        # Should succeed with matching schema
+        self.handler.write_parquet_validated(
+            df,
+            output_path,
+            schema_name="ohlcv",
+            enforcement_mode="strict"
+        )
+        
+        self.assertTrue(output_path.exists())
+    
+    def test_write_with_metadata(self):
         """Test write with custom metadata."""
-        file_path = temp_dir / "test.parquet"
-        metadata = {"source": "test_data", "version": "1.0"}
+        df = self._create_ohlcv_df(50)
+        output_path = self.test_dir / "test_with_metadata.parquet"
         
-        write_parquet_validated(sample_ohlcv_data, file_path, metadata=metadata)
-        
-        file_metadata = get_parquet_metadata(file_path)
-        assert file_metadata is not None
-        assert "num_rows" in file_metadata
-        assert file_metadata["num_rows"] == len(sample_ohlcv_data)
-    
-    def test_read_nonexistent_file(self, temp_dir):
-        """Test reading a nonexistent file raises error."""
-        file_path = temp_dir / "nonexistent.parquet"
-        
-        with pytest.raises(FileNotFoundError):
-            read_parquet_with_schema(file_path)
-
-
-# ============================================================================
-# Tests: Schema Validation
-# ============================================================================
-
-class TestSchemaValidation:
-    """Tests for schema validation."""
-    
-    def test_validate_with_correct_schema(self, temp_dir, sample_ohlcv_data):
-        """Test validation succeeds with correct schema."""
-        file_path = temp_dir / "test.parquet"
-        
-        write_parquet_validated(
-            sample_ohlcv_data,
-            file_path,
-            schema=OHLCV_SCHEMA,
-        )
-        
-        df = read_parquet_with_schema(
-            file_path,
-            schema=OHLCV_SCHEMA,
-        )
-        assert len(df) == len(sample_ohlcv_data)
-    
-    def test_validate_with_missing_required_column(self, temp_dir):
-        """Test validation fails when required column is missing."""
-        file_path = temp_dir / "test.parquet"
-        
-        # Create data missing a required column
-        data = {
-            "timestamp": pd.date_range("2024-01-01", periods=10, freq="1H"),
-            "open": np.random.uniform(100, 110, 10),
-            # Missing: high, low, close, volume
+        metadata = {
+            "asset": "MES",
+            "version": "v1.0",
+            "changelog": "Initial version",
         }
-        df = pd.DataFrame(data)
         
-        with pytest.raises(MissingRequiredColumnError):
-            write_parquet_validated(
+        self.handler.write_parquet_validated(
+            df,
+            output_path,
+            schema_name="ohlcv",
+            metadata=metadata,
+            enforcement_mode="ignore"
+        )
+        
+        # Read back and verify metadata
+        file_info = self.handler.get_file_info(output_path)
+        self.assertEqual(file_info["metadata"]["asset"], "MES")
+        self.assertEqual(file_info["metadata"]["version"], "v1.0")
+    
+    def test_write_with_different_compressions(self):
+        """Test write with different compression codecs."""
+        df = self._create_ohlcv_df(100)
+        
+        for compression in ["snappy", "gzip", "zstd", "none"]:
+            output_path = self.test_dir / f"test_{compression}.parquet"
+            
+            self.handler.write_parquet_validated(
                 df,
-                file_path,
-                schema=OHLCV_SCHEMA,
+                output_path,
+                schema_name="ohlcv",
+                compression=compression,
+                enforcement_mode="ignore"
+            )
+            
+            self.assertTrue(output_path.exists())
+    
+    def test_write_invalid_compression(self):
+        """Test write with invalid compression type."""
+        df = self._create_ohlcv_df(50)
+        output_path = self.test_dir / "test_invalid_compression.parquet"
+        
+        with self.assertRaises(CompressionError):
+            self.handler.write_parquet_validated(
+                df,
+                output_path,
+                compression="invalid",
+                enforcement_mode="ignore"
             )
     
-    def test_read_with_column_subset(self, temp_dir, sample_ohlcv_data):
-        """Test reading specific columns."""
-        file_path = temp_dir / "test.parquet"
+    def test_write_creates_parent_directories(self):
+        """Test that write creates parent directories."""
+        df = self._create_ohlcv_df(50)
+        output_path = self.test_dir / "nested" / "dirs" / "test.parquet"
         
-        write_parquet_validated(sample_ohlcv_data, file_path)
-        
-        columns = ["timestamp", "open", "close"]
-        df = read_parquet_with_schema(file_path, columns=columns)
-        
-        assert set(df.columns) == set(columns)
-
-
-# ============================================================================
-# Tests: Compression
-# ============================================================================
-
-class TestCompression:
-    """Tests for compression support."""
-    
-    @pytest.mark.parametrize("compression", ["snappy", "gzip", "zstd", "uncompressed"])
-    def test_write_read_with_compression(self, temp_dir, sample_ohlcv_data, compression):
-        """Test write and read with different compression codecs."""
-        file_path = temp_dir / f"test_{compression}.parquet"
-        
-        write_parquet_validated(
-            sample_ohlcv_data,
-            file_path,
-            compression=compression,
+        self.handler.write_parquet_validated(
+            df,
+            output_path,
+            schema_name="ohlcv",
+            enforcement_mode="ignore"
         )
         
-        df = read_parquet_with_schema(file_path)
-        assert len(df) == len(sample_ohlcv_data)
+        self.assertTrue(output_path.exists())
     
-    def test_compression_validation(self):
-        """Test compression codec validation."""
-        assert validate_compression("snappy") == "snappy"
-        assert validate_compression("gzip") == "gzip"
+    # ===== Read Tests =====
+    
+    def test_read_parquet_basic(self):
+        """Test basic Parquet read functionality."""
+        df_write = self._create_ohlcv_df(50)
+        output_path = self.test_dir / "test_read_basic.parquet"
         
-        with pytest.raises(CompressionError):
-            validate_compression("invalid_codec")
+        self.handler.write_parquet_validated(
+            df_write,
+            output_path,
+            schema_name="ohlcv",
+            enforcement_mode="ignore"
+        )
+        
+        df_read = self.handler.read_parquet_with_schema(
+            output_path,
+            enforcement_mode="ignore"
+        )
+        
+        self.assertEqual(len(df_read), 50)
+        self.assertListEqual(
+            sorted(df_read.columns),
+            sorted(["timestamp", "asset", "open", "high", "low", "close", "volume"])
+        )
     
-    def test_compression_reduces_file_size(self, temp_dir, sample_ohlcv_data):
+    def test_read_with_schema_validation(self):
+        """Test read with schema validation."""
+        df_write = self._create_ohlcv_df(50)
+        output_path = self.test_dir / "test_read_with_schema.parquet"
+        
+        self.handler.write_parquet_validated(
+            df_write,
+            output_path,
+            schema_name="ohlcv",
+            enforcement_mode="ignore"
+        )
+        
+        df_read = self.handler.read_parquet_with_schema(
+            output_path,
+            schema_name="ohlcv",
+            enforcement_mode="strict"
+        )
+        
+        self.assertEqual(len(df_read), 50)
+    
+    def test_read_with_column_selection(self):
+        """Test read with specific columns."""
+        df_write = self._create_ohlcv_df(50)
+        output_path = self.test_dir / "test_read_columns.parquet"
+        
+        self.handler.write_parquet_validated(
+            df_write,
+            output_path,
+            schema_name="ohlcv",
+            enforcement_mode="ignore"
+        )
+        
+        df_read = self.handler.read_parquet_with_schema(
+            output_path,
+            columns=["timestamp", "close"],
+            enforcement_mode="ignore"
+        )
+        
+        self.assertListEqual(sorted(df_read.columns), ["close", "timestamp"])
+    
+    def test_read_nonexistent_file(self):
+        """Test reading nonexistent file raises error."""
+        with self.assertRaises(ParquetReadError):
+            self.handler.read_parquet_with_schema(
+                self.test_dir / "nonexistent.parquet",
+                enforcement_mode="ignore"
+            )
+    
+    # ===== Schema Validation Tests =====
+    
+    def test_schema_validation_missing_columns(self):
+        """Test schema validation with missing columns."""
+        # Create DataFrame missing a required column
+        df = pd.DataFrame({
+            "timestamp": [datetime.now()],
+            "asset": ["MES"],
+            # Missing: open, high, low, close, volume
+        })
+        
+        output_path = self.test_dir / "test_missing_cols.parquet"
+        
+        with self.assertRaises(SchemaMismatchError):
+            self.handler.write_parquet_validated(
+                df,
+                output_path,
+                schema_name="ohlcv",
+                enforcement_mode="strict"
+            )
+    
+    def test_schema_validation_extra_columns(self):
+        """Test schema validation with extra columns."""
+        df = self._create_ohlcv_df(50)
+        df["extra_column"] = "extra_data"
+        
+        output_path = self.test_dir / "test_extra_cols.parquet"
+        
+        # Should succeed in non-strict mode
+        self.handler.write_parquet_validated(
+            df,
+            output_path,
+            schema_name="ohlcv",
+            enforcement_mode="ignore"
+        )
+        
+        self.assertTrue(output_path.exists())
+    
+    def test_schema_validation_type_mismatch(self):
+        """Test schema validation with type mismatches."""
+        df = self._create_ohlcv_df(50)
+        df["close"] = df["close"].astype(str)  # Should be float64
+        
+        output_path = self.test_dir / "test_type_mismatch.parquet"
+        
+        with self.assertRaises(SchemaMismatchError):
+            self.handler.write_parquet_validated(
+                df,
+                output_path,
+                schema_name="ohlcv",
+                enforcement_mode="strict"
+            )
+    
+    def test_schema_coerce_mode(self):
+        """Test schema coercion mode."""
+        df = self._create_ohlcv_df(50)
+        df["volume"] = df["volume"].astype(float)  # Should be uint64
+        
+        output_path = self.test_dir / "test_coerce.parquet"
+        
+        # Should warn but succeed in coerce mode
+        self.handler.write_parquet_validated(
+            df,
+            output_path,
+            schema_name="ohlcv",
+            enforcement_mode="coerce"
+        )
+        
+        self.assertTrue(output_path.exists())
+    
+    # ===== Metadata Tests =====
+    
+    def test_metadata_extraction(self):
+        """Test metadata extraction from files."""
+        df = self._create_ohlcv_df(50)
+        output_path = self.test_dir / "test_metadata.parquet"
+        
+        metadata = {
+            "asset": "MES",
+            "version": "v1.2.3",
+        }
+        
+        self.handler.write_parquet_validated(
+            df,
+            output_path,
+            schema_name="ohlcv",
+            metadata=metadata,
+            enforcement_mode="ignore"
+        )
+        
+        file_info = self.handler.get_file_info(output_path)
+        
+        self.assertIn("asset", file_info["metadata"])
+        self.assertEqual(file_info["metadata"]["asset"], "MES")
+    
+    def test_metadata_with_dependencies(self):
+        """Test metadata with complex fields like dependencies."""
+        df = self._create_ohlcv_df(50)
+        output_path = self.test_dir / "test_deps_metadata.parquet"
+        
+        metadata = MetadataManager.create_metadata(
+            asset="MES",
+            version="v1",
+            dependencies=["raw_data_v1", "vendor_data_v2"]
+        )
+        
+        self.handler.write_parquet_validated(
+            df,
+            output_path,
+            metadata=metadata,
+            enforcement_mode="ignore"
+        )
+        
+        file_info = self.handler.get_file_info(output_path)
+        
+        # Dependencies should be present in metadata
+        self.assertIn("dependencies", file_info["metadata"])
+    
+    # ===== Partitioning Tests =====
+    
+    def test_write_partitioned_dataset_by_asset(self):
+        """Test writing partitioned dataset by asset."""
+        # Create data with multiple assets
+        df = pd.concat([
+            self._create_ohlcv_df(50).assign(asset="MES"),
+            self._create_ohlcv_df(50).assign(asset="ES"),
+        ], ignore_index=True)
+        
+        output_dir = self.test_dir / "partitioned_by_asset"
+        
+        self.handler.write_partitioned_dataset(
+            df,
+            output_dir,
+            partition_cols=["asset"],
+            schema_name="ohlcv",
+            enforcement_mode="ignore"
+        )
+        
+        self.assertTrue(output_dir.exists())
+        # Check for partition directories
+        self.assertTrue((output_dir / "asset=MES").exists())
+        self.assertTrue((output_dir / "asset=ES").exists())
+    
+    def test_write_partitioned_dataset_by_date(self):
+        """Test writing partitioned dataset by date."""
+        df = self._create_ohlcv_df(100)
+        # Add a date column
+        df["date"] = df["timestamp"].dt.date.astype(str)
+        
+        output_dir = self.test_dir / "partitioned_by_date"
+        
+        self.handler.write_partitioned_dataset(
+            df,
+            output_dir,
+            partition_cols=["date"],
+            schema_name="ohlcv",
+            enforcement_mode="ignore"
+        )
+        
+        self.assertTrue(output_dir.exists())
+    
+    def test_write_partitioned_missing_column(self):
+        """Test partitioning by non-existent column."""
+        df = self._create_ohlcv_df(50)
+        output_dir = self.test_dir / "partitioned_missing"
+        
+        with self.assertRaises(PartitioningError):
+            self.handler.write_partitioned_dataset(
+                df,
+                output_dir,
+                partition_cols=["nonexistent"],
+                schema_name="ohlcv",
+                enforcement_mode="ignore"
+            )
+    
+    def test_read_partitioned_dataset(self):
+        """Test reading partitioned dataset."""
+        # Create data with multiple assets
+        df_write = pd.concat([
+            self._create_ohlcv_df(50).assign(asset="MES"),
+            self._create_ohlcv_df(50).assign(asset="ES"),
+        ], ignore_index=True)
+        
+        output_dir = self.test_dir / "read_partitioned"
+        
+        self.handler.write_partitioned_dataset(
+            df_write,
+            output_dir,
+            partition_cols=["asset"],
+            schema_name="ohlcv",
+            enforcement_mode="ignore"
+        )
+        
+        df_read = self.handler.read_partitioned_dataset(
+            output_dir,
+            schema_name="ohlcv",
+            enforcement_mode="ignore"
+        )
+        
+        self.assertEqual(len(df_read), 100)
+    
+    # ===== Compression Tests =====
+    
+    def test_compression_reduces_file_size(self):
         """Test that compression reduces file size."""
-        uncompressed_path = temp_dir / "uncompressed.parquet"
-        compressed_path = temp_dir / "compressed.parquet"
+        df = self._create_ohlcv_df(1000)
         
-        write_parquet_validated(sample_ohlcv_data, uncompressed_path, compression="uncompressed")
-        write_parquet_validated(sample_ohlcv_data, compressed_path, compression="snappy")
+        # Write with no compression
+        uncompressed_path = self.test_dir / "uncompressed.parquet"
+        self.handler.write_parquet_validated(
+            df,
+            uncompressed_path,
+            schema_name="ohlcv",
+            compression="none",
+            enforcement_mode="ignore"
+        )
+        
+        # Write with snappy compression
+        compressed_path = self.test_dir / "compressed.parquet"
+        self.handler.write_parquet_validated(
+            df,
+            compressed_path,
+            schema_name="ohlcv",
+            compression="snappy",
+            enforcement_mode="ignore"
+        )
         
         uncompressed_size = uncompressed_path.stat().st_size
         compressed_size = compressed_path.stat().st_size
         
-        # Compression should reduce size
-        assert compressed_size < uncompressed_size
-
-
-# ============================================================================
-# Tests: Partitioning
-# ============================================================================
-
-class TestPartitioning:
-    """Tests for partitioned dataset operations."""
+        # Compression should reduce file size
+        self.assertLess(compressed_size, uncompressed_size)
     
-    def test_write_partitioned_dataset_by_date(self, temp_dir, sample_ohlcv_data):
-        """Test writing partitioned dataset by date."""
-        sample_ohlcv_data["date"] = sample_ohlcv_data["timestamp"].dt.date
+    # ===== High-Level Wrapper Tests =====
+    
+    def test_read_raw_data_wrapper(self):
+        """Test read_raw_data wrapper function."""
+        df_write = self._create_ohlcv_df(50)
+        output_path = self.test_dir / "raw_data.parquet"
         
-        dataset_path = temp_dir / "partitioned_dataset"
-        
-        write_parquet_validated(
-            sample_ohlcv_data,
-            dataset_path,
-            partition_cols=["date"],
+        self.handler.write_parquet_validated(
+            df_write,
+            output_path,
+            schema_name="ohlcv",
+            enforcement_mode="ignore"
         )
         
-        # Check that partition directories were created
-        assert dataset_path.exists()
+        df_read = read_raw_data(output_path, enforcement_mode="ignore")
+        
+        self.assertEqual(len(df_read), 50)
     
-    def test_read_partitioned_dataset(self, temp_dir, sample_ohlcv_data):
-        """Test reading partitioned dataset."""
-        sample_ohlcv_data["year"] = sample_ohlcv_data["timestamp"].dt.year
+    def test_write_cleaned_data_wrapper(self):
+        """Test write_cleaned_data wrapper function."""
+        df = self._create_ohlcv_df(50)
+        output_path = self.test_dir / "cleaned_data.parquet"
         
-        dataset_path = temp_dir / "partitioned_dataset"
-        
-        write_parquet_validated(
-            sample_ohlcv_data,
-            dataset_path,
-            partition_cols=["year"],
+        write_cleaned_data(
+            df,
+            output_path,
+            metadata={"version": "v1.0"},
+            enforcement_mode="ignore"
         )
         
-        df = read_partitioned_dataset(dataset_path)
-        assert len(df) > 0
-
-
-# ============================================================================
-# Tests: Metadata Management
-# ============================================================================
-
-class TestMetadataManagement:
-    """Tests for metadata management."""
+        self.assertTrue(output_path.exists())
     
-    def test_create_metadata(self):
-        """Test metadata creation."""
-        metadata = MetadataManager.create_metadata(
-            layer="raw",
-            asset="MES",
-            record_count=1000,
-            file_size_bytes=1024 * 1024,
-            timestamp_range=(
-                "2024-01-01T00:00:00Z",
-                "2024-01-31T23:59:59Z",
-            ),
-        )
-        
-        assert metadata["layer"] == "raw"
-        assert metadata["asset"] == "MES"
-        assert metadata["record_count"] == 1000
-    
-    def test_write_and_read_metadata_file(self, temp_dir):
-        """Test writing and reading metadata files."""
-        metadata_path = temp_dir / "metadata.json"
-        
-        metadata = MetadataManager.create_metadata(
-            layer="cleaned",
-            asset="ES",
-            record_count=500,
-            file_size_bytes=512 * 1024,
-            version_info={"major_version": 1, "previous_version": 0},
-        )
-        
-        MetadataManager.write_metadata_file(metadata, metadata_path)
-        assert metadata_path.exists()
-        
-        read_metadata = MetadataManager.read_metadata_file(metadata_path)
-        assert read_metadata["layer"] == "cleaned"
-        assert read_metadata["asset"] == "ES"
-    
-    def test_add_file_info_to_metadata(self):
-        """Test adding file info to metadata."""
-        metadata = MetadataManager.create_metadata(
-            layer="features",
-            asset="VIX",
-            record_count=100,
-            file_size_bytes=100 * 1024,
-        )
-        
-        MetadataManager.add_file_info(
-            metadata,
-            "features.parquet",
-            size_bytes=100 * 1024,
-            file_format="parquet",
-            row_count=100,
-        )
-        
-        assert "file_info" in metadata
-        assert "file_list" in metadata["file_info"]
-        assert len(metadata["file_info"]["file_list"]) == 1
-    
-    def test_add_quality_metrics(self):
-        """Test adding quality metrics to metadata."""
-        metadata = MetadataManager.create_metadata(
-            layer="raw",
-            asset="MES",
-            record_count=100,
-            file_size_bytes=100 * 1024,
-        )
-        
-        MetadataManager.add_quality_metrics(
-            metadata,
-            null_counts={"timestamp": 0, "volume": 5},
-            quality_flags=["gaps_in_timestamps"],
-            completeness_percentage=98.5,
-        )
-        
-        assert "data_quality" in metadata
-        assert metadata["data_quality"]["completeness_percentage"] == 98.5
-
-
-# ============================================================================
-# Tests: Layer-Specific Wrappers
-# ============================================================================
-
-class TestLayerWrappers:
-    """Tests for layer-specific wrapper functions."""
-    
-    def test_read_raw_data(self, temp_dir, sample_ohlcv_data):
-        """Test reading raw data."""
-        file_path = temp_dir / "raw.parquet"
-        
-        write_parquet_validated(sample_ohlcv_data, file_path)
-        df = read_raw_data(file_path)
-        
-        assert len(df) == len(sample_ohlcv_data)
-    
-    def test_write_read_cleaned_data(self, temp_dir, sample_ohlcv_data):
-        """Test writing and reading cleaned data."""
-        file_path = temp_dir / "cleaned.parquet"
-        
-        write_cleaned_data(sample_ohlcv_data, file_path)
-        df = read_parquet_with_schema(file_path)
-        
-        assert len(df) == len(sample_ohlcv_data)
-    
-    def test_write_read_features(self, temp_dir, sample_features_data):
-        """Test writing and reading feature data."""
-        file_path = temp_dir / "features.parquet"
-        
-        write_features(sample_features_data, file_path)
-        df = read_features(file_path)
-        
-        assert len(df) == len(sample_features_data)
-    
-    def test_features_with_schema(self, temp_dir, sample_features_data):
-        """Test writing/reading features with schema validation."""
-        file_path = temp_dir / "features.parquet"
+    def test_read_write_features_wrapper(self):
+        """Test read_features and write_features wrapper functions."""
+        df_write = self._create_features_df(50)
+        output_path = self.test_dir / "features.parquet"
         
         write_features(
-            sample_features_data,
-            file_path,
-            schema=PRICE_VOLATILITY_SCHEMA,
+            df_write,
+            output_path,
+            metadata={"feature_set": "v1"},
+            enforcement_mode="ignore"
         )
         
-        df = read_features(file_path, schema=PRICE_VOLATILITY_SCHEMA)
-        assert len(df) == len(sample_features_data)
-
-
-# ============================================================================
-# Tests: Schema Utilities
-# ============================================================================
-
-class TestSchemaUtilities:
-    """Tests for schema utility functions."""
+        df_read = read_features(output_path, enforcement_mode="ignore")
+        
+        self.assertEqual(len(df_read), 50)
     
-    def test_get_schema_from_registry(self):
-        """Test retrieving schema from registry."""
-        schema = get_schema("ohlcv")
-        assert schema.name == "ohlcv"
-        assert schema.version == "1.0.0"
+    # ===== File Info Tests =====
     
-    def test_get_nonexistent_schema_raises_error(self):
-        """Test that requesting nonexistent schema raises error."""
-        with pytest.raises(KeyError):
-            get_schema("nonexistent_schema")
+    def test_get_file_info(self):
+        """Test getting file information."""
+        df = self._create_ohlcv_df(100)
+        output_path = self.test_dir / "info_test.parquet"
+        
+        self.handler.write_parquet_validated(
+            df,
+            output_path,
+            schema_name="ohlcv",
+            enforcement_mode="ignore"
+        )
+        
+        file_info = self.handler.get_file_info(output_path)
+        
+        self.assertEqual(file_info["num_rows"], 100)
+        self.assertEqual(file_info["num_columns"], 7)  # OHLCV has 7 columns
+        self.assertEqual(len(file_info["columns"]), 7)
+        self.assertGreater(file_info["file_size_bytes"], 0)
     
-    def test_schema_column_properties(self):
-        """Test schema column properties."""
-        schema = OHLCV_SCHEMA
-        
-        required = schema.get_required_columns()
-        assert "timestamp" in required
-        assert "volume" in required
-        
-        optional = schema.get_optional_columns()
-        assert len(optional) == 0  # OHLCV has no optional columns
-
-
-# ============================================================================
-# Tests: Parquet Metadata Extraction
-# ============================================================================
-
-class TestParquetMetadataExtraction:
-    """Tests for extracting metadata from Parquet files."""
-    
-    def test_get_parquet_metadata(self, temp_dir, sample_ohlcv_data):
-        """Test extracting metadata from Parquet file."""
-        file_path = temp_dir / "test.parquet"
-        write_parquet_validated(sample_ohlcv_data, file_path)
-        
-        metadata = get_parquet_metadata(file_path)
-        
-        assert metadata["num_rows"] == len(sample_ohlcv_data)
-        assert metadata["num_columns"] == len(sample_ohlcv_data.columns)
-        assert set(metadata["columns"]) == set(sample_ohlcv_data.columns)
-    
-    def test_get_parquet_schema(self, temp_dir, sample_ohlcv_data):
-        """Test extracting schema from Parquet file."""
-        file_path = temp_dir / "test.parquet"
-        write_parquet_validated(sample_ohlcv_data, file_path)
-        
-        schema = get_parquet_schema(file_path)
-        
-        assert "timestamp" in schema
-        assert "open" in schema
-        assert "volume" in schema
-
-
-# ============================================================================
-# Tests: Error Handling
-# ============================================================================
-
-class TestErrorHandling:
-    """Tests for error handling."""
-    
-    def test_read_corrupted_file_raises_error(self, temp_dir):
-        """Test that reading corrupted file raises error."""
-        # Create a file that's not a valid Parquet file
-        file_path = temp_dir / "corrupted.parquet"
-        file_path.write_text("not a parquet file")
-        
-        with pytest.raises((CorruptedFileError, ParquetIOError)):
-            read_parquet_with_schema(file_path)
-    
-    def test_invalid_compression_raises_error(self, temp_dir, sample_ohlcv_data):
-        """Test that invalid compression raises error."""
-        file_path = temp_dir / "test.parquet"
-        
-        with pytest.raises(CompressionError):
-            write_parquet_validated(
-                sample_ohlcv_data,
-                file_path,
-                compression="invalid",
+    def test_get_file_info_nonexistent(self):
+        """Test getting info for nonexistent file."""
+        with self.assertRaises(ParquetReadError):
+            self.handler.get_file_info(
+                self.test_dir / "nonexistent.parquet"
             )
 
 
-# ============================================================================
-# Tests: Data Type Coercion
-# ============================================================================
-
-class TestDataTypeCoercion:
-    """Tests for data type coercion."""
+class TestMetadataManager(unittest.TestCase):
+    """Tests for MetadataManager class."""
     
-    def test_timestamp_coercion(self, temp_dir):
-        """Test timestamp coercion."""
-        schema = DataSchema(
-            name="test",
-            version="1.0.0",
-            description="Test",
-            columns=[
-                ColumnSchema("timestamp", "timestamp[ns]", nullable=False),
-                ColumnSchema("value", "double", nullable=False),
-            ],
+    def setUp(self):
+        """Set up test fixtures."""
+        self.manager = MetadataManager()
+    
+    def test_create_metadata_basic(self):
+        """Test basic metadata creation."""
+        metadata = self.manager.create_metadata(
+            asset="MES",
+            version="v1.0"
         )
         
-        # Create data with string timestamps
-        data = {
-            "timestamp": ["2024-01-01 00:00:00"] * 10,
-            "value": np.random.uniform(0, 100, 10),
+        self.assertIn("asset", metadata)
+        self.assertEqual(metadata["asset"], "MES")
+        self.assertEqual(metadata["version"], "v1.0")
+        self.assertIn("creation_timestamp", metadata)
+    
+    def test_create_metadata_with_dependencies(self):
+        """Test metadata creation with dependencies."""
+        deps = ["raw_data_v1", "vendor_data_v2"]
+        metadata = self.manager.create_metadata(
+            dependencies=deps
+        )
+        
+        # Dependencies should be JSON encoded
+        self.assertIn("dependencies", metadata)
+        self.assertEqual(json.loads(metadata["dependencies"]), deps)
+    
+    def test_validate_metadata_success(self):
+        """Test successful metadata validation."""
+        metadata = self.manager.create_metadata(asset="MES")
+        is_valid, error = self.manager.validate_metadata(metadata)
+        
+        self.assertTrue(is_valid)
+        self.assertIsNone(error)
+    
+    def test_validate_metadata_missing_required(self):
+        """Test validation with missing required fields."""
+        metadata = {"some_field": "value"}
+        is_valid, error = self.manager.validate_metadata(
+            metadata,
+            required_keys=["required_field"]
+        )
+        
+        self.assertFalse(is_valid)
+        self.assertIn("Missing required metadata keys", error)
+    
+    def test_validate_metadata_invalid_timestamp(self):
+        """Test validation with invalid timestamp."""
+        metadata = {
+            self.manager.CREATION_TIMESTAMP: "invalid-timestamp"
         }
-        df = pd.DataFrame(data)
+        is_valid, error = self.manager.validate_metadata(metadata)
         
-        file_path = temp_dir / "test.parquet"
+        self.assertFalse(is_valid)
+    
+    def test_merge_metadata(self):
+        """Test metadata merging."""
+        base = self.manager.create_metadata(asset="MES", version="v1")
+        updates = {"changelog": "Updated schema"}
         
-        # Should coerce successfully
-        write_parquet_validated(df, file_path, schema=schema)
+        merged = self.manager.merge_metadata(base, updates)
         
-        df_read = read_parquet_with_schema(file_path, schema=schema)
-        assert pd.api.types.is_datetime64_any_dtype(df_read["timestamp"])
+        self.assertEqual(merged["asset"], "MES")
+        self.assertEqual(merged["changelog"], "Updated schema")
+        self.assertIn("creation_timestamp", merged)
+    
+    def test_merge_preserves_timestamp(self):
+        """Test that merge preserves creation timestamp."""
+        original_time = "2024-01-01T12:00:00"
+        base = {
+            self.manager.CREATION_TIMESTAMP: original_time,
+            "asset": "MES"
+        }
+        updates = {
+            self.manager.CREATION_TIMESTAMP: "2024-01-02T12:00:00",
+            "version": "v2"
+        }
+        
+        merged = self.manager.merge_metadata(
+            base,
+            updates,
+            preserve_creation_timestamp=True
+        )
+        
+        self.assertEqual(
+            merged[self.manager.CREATION_TIMESTAMP],
+            original_time
+        )
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    unittest.main()
